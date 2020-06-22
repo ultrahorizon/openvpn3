@@ -33,6 +33,7 @@
 #include <openvpn/common/uniqueptr.hpp>
 #include <openvpn/win/scoped_handle.hpp>
 #include <openvpn/win/unicode.hpp>
+#include <openvpn/win/winerr_helpers.hpp>
 
 namespace openvpn {
   namespace Win {
@@ -96,11 +97,11 @@ namespace openvpn {
       ScopedHANDLE cstdout_r; // child write side
       ScopedHANDLE cstdout_w; // parent read side
       if (!::CreatePipe(cstdout_r.ref(), cstdout_w.ref(), &saAttr, 0))
-	throw win_call("cannot create pipe for child stdout");
+	throw win_call("cannot create pipe for child stdout (" + win32_error_to_string(GetLastError()) + ")");
 
       // Ensure the read handle to the pipe for STDOUT is not inherited.
       if (!::SetHandleInformation(cstdout_r(), HANDLE_FLAG_INHERIT, 0))
-	throw win_call("SetHandleInformation failed for child stdout pipe");
+	throw win_call("SetHandleInformation failed for child stdout pipe (" + win32_error_to_string(GetLastError()) + ")");
 
       // Set up members of the PROCESS_INFORMATION structure.
       PROCESS_INFORMATION piProcInfo;
@@ -127,7 +128,7 @@ namespace openvpn {
 			  nullptr,       // use parent's current directory
 			  &siStartInfo,  // STARTUPINFO pointer
 			  &piProcInfo))  // receives PROCESS_INFORMATION
-	throw win_call("cannot create process");
+	throw win_call("cannot create process (" + win32_error_to_string(GetLastError()) + ")");
 
       // wrap handles to child process and its primary thread.
       ScopedHANDLE process_hand(piProcInfo.hProcess);
