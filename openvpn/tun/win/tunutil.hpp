@@ -158,6 +158,19 @@ namespace openvpn {
 	    if (std::strcmp(strbuf, wintun ? WINTUN_COMPONENT_ID : COMPONENT_ID))
 	      continue;
 
+	    DWORD is_uh_vpn_adapter = 0;
+	    len = sizeof(is_uh_vpn_adapter);
+	    status = ::RegQueryValueExA(unit_key(),
+					"IsUHVPNAdapter",
+					nullptr,
+					&data_type,
+					(LPBYTE)&is_uh_vpn_adapter,
+					&len);
+	    if (status != ERROR_SUCCESS || data_type != REG_DWORD)
+	      continue;
+	    if (!is_uh_vpn_adapter)
+	      continue;
+
 	    TapGuidLuid tgl;
 
 	    len = sizeof(strbuf);
