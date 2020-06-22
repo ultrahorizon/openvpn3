@@ -58,7 +58,7 @@ namespace openvpn {
 	      auto key_name = ss.str();
 
 	      const LONG status = ::RegCreateKeyA(HKEY_LOCAL_MACHINE, key_name.c_str(), key.ref());
-	      check_reg_error<nrpt_error>(status, key_name);
+	      openvpn::Win::check_reg_error<nrpt_error>(status, key_name);
 	    }
 
 	    // Name
@@ -71,7 +71,7 @@ namespace openvpn {
 						   REG_MULTI_SZ,
 						   (const BYTE *)name.c_str(),
 						   (name.length()+1)*2);
-	      check_reg_error<nrpt_error>(status, "Name");
+	      openvpn::Win::check_reg_error<nrpt_error>(status, "Name");
 	    }
 
 	    // GenericDNSServers
@@ -83,7 +83,7 @@ namespace openvpn {
 						   REG_SZ,
 						   (const BYTE *)dns_servers_joined.c_str(),
 						   (dns_servers_joined.length()+1)*2);
-	      check_reg_error<nrpt_error>(status, "GenericDNSServers");
+	      openvpn::Win::check_reg_error<nrpt_error>(status, "GenericDNSServers");
 	    }
 
 	    // ConfigOptions
@@ -95,7 +95,7 @@ namespace openvpn {
 						   REG_DWORD,
 						   (const BYTE *)&value,
 						   sizeof(value));
-	      check_reg_error<nrpt_error>(status, "ConfigOptions");
+	      openvpn::Win::check_reg_error<nrpt_error>(status, "ConfigOptions");
 	    }
 
 	    // Version
@@ -107,7 +107,7 @@ namespace openvpn {
 						   REG_DWORD,
 						   (const BYTE *)&value,
 						   sizeof(value));
-	      check_reg_error<nrpt_error>(status, "Version");
+	      openvpn::Win::check_reg_error<nrpt_error>(status, "Version");
 	    }
 	  }
       }
