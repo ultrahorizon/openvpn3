@@ -35,6 +35,7 @@
 #include <openvpn/common/action.hpp>
 #include <openvpn/win/reg.hpp>
 #include <openvpn/win/winerr.hpp>
+#include <openvpn/win/winerr_helpers.hpp>
 
 namespace openvpn {
   namespace TunWin {
@@ -112,10 +113,11 @@ namespace openvpn {
 	  }
       }
 
-      static bool delete_rule()
+      static bool delete_rule(unsigned int &remove_count, std::ostream& log)
       {
 	Win::RegKeyEnumerator keys(HKEY_LOCAL_MACHINE, dnsPolicyConfig());
 
+	remove_count = 0;
 	for (const auto& key : keys)
 	  {
 	    // remove only own policies
@@ -125,7 +127,13 @@ namespace openvpn {
 	    std::ostringstream ss;
 	    ss << dnsPolicyConfig() << "\\" << key;
 	    auto path = ss.str();
-	    ::RegDeleteTreeA(HKEY_LOCAL_MACHINE, path.c_str());
+	    LSTATUS status = ::RegDeleteTreeA(HKEY_LOCAL_MACHINE, path.c_str());
+	    if (status == ERROR_SUCCESS) {
+		remove_count++;
+	    } else {
+		log << "Failed to remove " << path << "; "
+		    << openvpn::Win::win32_error_to_string(status) << std::endl;
+	    }
 	  }
 
 	return true;
@@ -180,8 +188,10 @@ namespace openvpn {
       public:
 	virtual void execute(std::ostream& log) override
 	{
-	  log << to_string() << std::endl;
-	  delete_rule();
+	  log << to_string() << " running..." << std::endl;
+	  unsigned int count = 0;
+	  delete_rule(count, log);
+	  log << to_string() << " deleted " << count << " rules." << std::endl;
 	}
 
 	virtual std::string to_string() const override
