@@ -140,7 +140,7 @@ namespace openvpn {
 
       static const char *policyPrefix()
       {
-	static const char prefix[] = "OpenVPNDNSRouting";
+	static const char prefix[] = "UHVPNDNSRouting";
 	return prefix;
       }
 
