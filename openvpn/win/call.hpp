@@ -32,6 +32,7 @@
 
 #include <openvpn/common/uniqueptr.hpp>
 #include <openvpn/win/scoped_handle.hpp>
+#include <openvpn/win/unicode.hpp>
 
 namespace openvpn {
   namespace Win {
