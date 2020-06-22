@@ -40,7 +40,7 @@ namespace openvpn {
     OPENVPN_EXCEPTION(win_call);
 
     // console codepage, used to decode output
-    int console_cp = ::GetOEMCP();
+    static int console_cp = ::GetOEMCP();
 
     inline std::string call(const std::string& cmd)
     {
