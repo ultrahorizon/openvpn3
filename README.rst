@@ -1,3 +1,33 @@
+Ultra Horizon's OpenVPN 3 fork for UH VPN
+=========================================
+
+This repository contains a fork of OpenVPN 3 that is kept inline with the
+OpenVPN 3 master branch on every release of UH VPN.  This fork provides a
+few patches that fix or enhance functionality in OpenVPN 3 for use in the
+UH VPN applications.
+
+The following branches are noteworthy:
+
+* ``uh-vpn-master`` is the default branch in this fork and contains the latest
+  version of the UH VPN fork with all patches.
+* ``master`` contains the latest content from the upstrem OpenVPN 3 repository
+
+
+All UH VPN releases from this point forwards will make use of a tag of the
+form ``uhvpn-<NUMBER>`` where ``<NUMBER>`` is a unique, incrementing version
+number.  This tag will be reflected in the UH VPN client's license file, which
+on desktop platforms can be found in the about dialog, and on phones in the
+settings menu.
+
+If you cannot find a UH VPN license file please contact
+``support@ultra-horizon.com`` with the UH VPN app version number and platform
+and we will happily provide it to you.
+
+*Below lies the original contents of the README:*
+
+----
+
+
 OpenVPN 3
 =========
 
