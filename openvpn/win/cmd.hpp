@@ -49,7 +49,12 @@ namespace openvpn {
     {
       os << cmd << std::endl;
       std::string out = Win::call(cmd);
+      // Lots of Windows commands end with lots of newlines, trim these away so
+      // we only print one.
+      openvpn::string::trim_crlf(out);
       os << out;
+      if (!out.empty())
+	os << std::endl;
     }
 
     virtual std::string to_string() const override
