@@ -12,12 +12,29 @@ The following branches are noteworthy:
   version of the UH VPN fork with all patches.
 * ``master`` contains the latest content from the upstrem OpenVPN 3 repository
 
+Git Fork Technical Notes
+------------------------
 
 All UH VPN releases from this point forwards will make use of a tag of the
 form ``uhvpn-<NUMBER>`` where ``<NUMBER>`` is a unique, incrementing version
 number.  This tag will be reflected in the UH VPN client's license file, which
 on desktop platforms can be found in the about dialog, and on phones in the
-settings menu.
+settings menu.  The first tag, ``uhvpn-0`` represents the base commit that all
+UH VPN specific patches have been applied after, i.e. no UH VPN patches will
+appear before that point.
+
+Edits to OpenVPN3 will be committed ``uh-vpn-master``, with upstream changes
+being periodically merged in order to maintain git history with the upstream
+project.  Thus when viewing commits with ``git log``, it may seem cluttered if
+trying to just view UH VPN specific patches.  To see these UH VPN specific
+patches use the following ``git log`` command::
+
+  $ git log --first-parent --no-merges uhvpn-0..uh-vpn-master
+
+Alternatively if you wish to get an idea of the git structure it is advisable
+to try the following command which illustrates things::
+
+  $ git log --online --graph
 
 If you cannot find a UH VPN license file please contact
 ``support@ultra-horizon.com`` with the UH VPN app version number and platform
