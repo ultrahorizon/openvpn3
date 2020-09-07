@@ -19,39 +19,36 @@
 //    along with this program in the COPYING file.
 //    If not, see <http://www.gnu.org/licenses/>.
 
+// OpenSSL specific methods for TLS version
+
 #pragma once
 
-#include <string>
+#include <openvpn/ssl/tlsver.hpp>
 
 namespace openvpn {
-  namespace HaltRestart {
-    enum Type {
-      HALT,             // disconnect
-      RESTART,          // restart, don't preserve session token
-      RESTART_PSID,     // restart, preserve session token
-      RESTART_PASSIVE,  // restart, preserve session token and local client instance object
-      AUTH_FAILED,      // auth fail, don't preserve session token
-      RAW,              // pass raw message to client
-    };
+  namespace TLSVersion {
 
-    inline std::string to_string(Type type)
+    inline int toTLSVersion(const Type version)
     {
-      switch (type)
+
+      switch (version)
 	{
-	case HALT:
-	  return "HALT";
-	case RESTART:
-	  return "RESTART";
-	case RESTART_PSID:
-	  return "RESTART_PSID";
-	case RESTART_PASSIVE:
-	  return "RESTART_PASSIVE";
-	case AUTH_FAILED:
-	  return "AUTH_FAILED";
-	case RAW:
-	  return "RAW";
+	case UNDEF:
 	default:
-	  return "HaltRestart_?";
+	  return 0;
+	case V1_0:
+	  return TLS1_VERSION;
+	case V1_1:
+	  return TLS1_1_VERSION;
+	case V1_2:
+	  return TLS1_2_VERSION;
+	case V1_3:
+#ifdef TLS1_3_VERSION
+	  return TLS1_3_VERSION;
+#else
+	  // TLS 1.3 is SSL 3.4
+	  return 0x0304;
+#endif
 	}
     }
   }

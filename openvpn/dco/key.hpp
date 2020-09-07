@@ -5,6 +5,7 @@
 //               packet compression.
 //
 //    Copyright (C) 2012-2020 OpenVPN Inc.
+//    Copyright (C) 2020-2020 Lev Stipakov <lev@openvpn.net>
 //
 //    This program is free software: you can redistribute it and/or modify
 //    it under the terms of the GNU Affero General Public License Version 3
@@ -21,38 +22,26 @@
 
 #pragma once
 
-#include <string>
-
 namespace openvpn {
-  namespace HaltRestart {
-    enum Type {
-      HALT,             // disconnect
-      RESTART,          // restart, don't preserve session token
-      RESTART_PSID,     // restart, preserve session token
-      RESTART_PASSIVE,  // restart, preserve session token and local client instance object
-      AUTH_FAILED,      // auth fail, don't preserve session token
-      RAW,              // pass raw message to client
-    };
+namespace KoRekey {
 
-    inline std::string to_string(Type type)
-    {
-      switch (type)
-	{
-	case HALT:
-	  return "HALT";
-	case RESTART:
-	  return "RESTART";
-	case RESTART_PSID:
-	  return "RESTART_PSID";
-	case RESTART_PASSIVE:
-	  return "RESTART_PASSIVE";
-	case AUTH_FAILED:
-	  return "AUTH_FAILED";
-	case RAW:
-	  return "RAW";
-	default:
-	  return "HaltRestart_?";
-	}
-    }
-  }
-}
+struct KeyDirection {
+  const unsigned char *cipher_key;
+  const unsigned char *hmac_key; // only CBC
+  unsigned char nonce_tail[12];  // only GCM
+  unsigned int cipher_key_size;
+  unsigned int hmac_key_size; // only CBC
+};
+
+struct KeyConfig {
+  KeyDirection encrypt;
+  KeyDirection decrypt;
+
+  int key_id;
+  int remote_peer_id;
+  unsigned int cipher_alg;
+  unsigned int hmac_alg; // only CBC
+};
+
+} // namespace KoRekey
+} // namespace openvpn
