@@ -34,7 +34,7 @@ patches use the following ``git log`` command::
 Alternatively if you wish to get an idea of the git structure it is advisable
 to try the following command which illustrates things::
 
-  $ git log --online --graph
+  $ git log --oneline --graph
 
 If you cannot find a UH VPN license file please contact
 ``support@ultra-horizon.com`` with the UH VPN app version number and platform
