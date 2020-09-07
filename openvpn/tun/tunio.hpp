@@ -230,9 +230,12 @@ namespace openvpn {
 		  stats->inc_stat(SessionStats::TUN_BYTES_IN, bytes_recvd);
 		  stats->inc_stat(SessionStats::TUN_PACKETS_IN, 1);
 		}
+#ifndef TUN_PREFIX_WRITE_ONLY
 	      if (!tun_prefix)
 		{
+#endif // TUN_PREFIX_WRITE_ONLY
 		  read_handler->tun_read_handler(pfp);
+#ifndef TUN_PREFIX_WRITE_ONLY
 		}
 	      else if (pfp->buf.size() >= 4)
 		{
@@ -245,6 +248,7 @@ namespace openvpn {
 		  OPENVPN_LOG_TUN_ERROR("TUN Read Error: cannot read prefix");
 		  tun_error(Error::TUN_READ_ERROR, nullptr);
 		}
+#endif // TUN_PREFIX_WRITE_ONLY
 	    }
 	  else
 	    {
