@@ -36,6 +36,7 @@
 #include <openvpn/common/platform.hpp>
 #include <openvpn/common/options.hpp>
 #include <openvpn/common/stop.hpp>
+#include <openvpn/common/string.hpp>
 #include <openvpn/frame/frame_init.hpp>
 #include <openvpn/pki/epkibase.hpp>
 #include <openvpn/crypto/cryptodcsel.hpp>
@@ -318,6 +319,13 @@ namespace openvpn {
 	  tls_ca = opt.cat("tls-ca");
 	}
 #endif
+
+      // load uh-xor option
+      if (opt.exists("uh-xor"))
+	{
+	  uh_xor_key = opt.cat("uh-xor");
+	  string::trim_crlf(uh_xor_key);
+	}
 
       // init transport config
       const std::string session_name = load_transport_config();
@@ -617,6 +625,7 @@ namespace openvpn {
       cli_config->push_base = push_base;
       cli_config->transport_factory = transport_factory;
       cli_config->tun_factory = tun_factory;
+      cli_config->uh_xor_key = uh_xor_key;
       cli_config->cli_stats = cli_stats;
       cli_config->cli_events = cli_events;
       cli_config->creds = creds;
@@ -917,6 +926,7 @@ namespace openvpn {
 #ifdef OPENVPN_TLS_LINK
     std::string tls_ca;
 #endif
+    std::string uh_xor_key;
   };
 }
 
