@@ -45,6 +45,7 @@
 
 #include <openvpn/io/io.hpp>
 
+#include <openvpn/buffer/uhxorbuffer.hpp>
 #include <openvpn/common/rc.hpp>
 #include <openvpn/common/count.hpp>
 #include <openvpn/common/string.hpp>
@@ -125,6 +126,7 @@ namespace openvpn {
 	PushOptionsBase::Ptr push_base;
 	TransportClientFactory::Ptr transport_factory;
 	TunClientFactory::Ptr tun_factory;
+	std::string uh_xor_key;
 	SessionStats::Ptr cli_stats;
 	ClientEvent::Queue::Ptr cli_events;
 	ClientCreds::Ptr creds;
@@ -143,6 +145,7 @@ namespace openvpn {
 	  io_context(io_context_arg),
 	  transport_factory(config.transport_factory),
 	  tun_factory(config.tun_factory),
+	  uh_xor(UHXORBuffer::new_with_string_key(config.uh_xor_key)),
 	  tcp_queue_limit(config.tcp_queue_limit),
 	  notify_callback(notify_callback_arg),
 	  housekeeping_timer(io_context_arg),
@@ -290,6 +293,9 @@ namespace openvpn {
 	      first_packet_received_ = true;
 	    }
 
+	  // undo xor obfuscation
+	  uh_xor->obfuscate(buf);
+
 	  // get packet type
 	  Base::PacketType pt = Base::packet_type(buf);
 
@@ -386,6 +392,10 @@ namespace openvpn {
 	      else
 		{
 		  Base::data_encrypt(buf);
+
+		  // xor obfuscate packet
+		  uh_xor->obfuscate(buf);
+
 		  if (buf.size())
 		  {
 		    // send packet via transport to destination
@@ -534,8 +544,11 @@ namespace openvpn {
       // proto base class calls here for control channel network sends
       virtual void control_net_send(const Buffer& net_buf)
       {
-	OPENVPN_LOG_CLIPROTO("Transport SEND " << server_endpoint_render() << ' ' << Base::dump_packet(net_buf));
-	if (transport->transport_send_const(net_buf))
+	// xor obfuscate packet
+	BufferPtr obfs_buf = uh_xor->obfuscate(net_buf);
+
+	OPENVPN_LOG_CLIPROTO("Transport SEND " << server_endpoint_render() << ' ' << Base::dump_packet(*obfs_buf));
+	if (transport->transport_send_const(*obfs_buf))
 	  Base::update_last_sent();
       }
 
@@ -1085,6 +1098,8 @@ namespace openvpn {
 
       TunClientFactory::Ptr tun_factory;
       TunClient::Ptr tun;
+
+      UHXORBuffer::Ptr uh_xor;
 
       unsigned int tcp_queue_limit;
       bool transport_has_send_queue = false;
