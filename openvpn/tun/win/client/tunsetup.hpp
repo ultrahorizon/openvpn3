@@ -451,6 +451,27 @@ namespace openvpn {
 	// Usage: delete route [prefix=]<IPv6 address>/<integer> [interface=]<string>
 	//  [[nexthop=]<IPv6 address>]
 	//  [[store=]active|persistent]
+
+	// Add bypass route
+	{
+	  // get default gateway
+	  const Util::BestGateway gw{ pull.remote_address.address, tap.index };
+
+	  if (!gw.local_route())
+	    {
+	      // add server bypass route
+	      if (gw.defined())
+		{
+		  if (!pull.remote_address.ipv6 && !(pull.reroute_gw.flags & RedirectGatewayFlags::RG_LOCAL))
+		    add_bypass_route(gw, pull.remote_address.address, false, create, destroy);
+		}
+	      else
+		throw tun_win_setup("tun setup error: cannot find gateway for bypass route");
+	    }
+	}
+
+
+	// Process Include Routes
 	{
 	  for (auto &route : pull.add_routes)
 	    {
@@ -509,21 +530,6 @@ namespace openvpn {
 	// Process IPv4 redirect-gateway
 	if (pull.reroute_gw.ipv4)
 	  {
-	    // get default gateway
-	    const Util::BestGateway gw{ pull.remote_address.address, tap.index };
-
-	    if (!gw.local_route())
-	      {
-		// add server bypass route
-		if (gw.defined())
-		  {
-		    if (!pull.remote_address.ipv6 && !(pull.reroute_gw.flags & RedirectGatewayFlags::RG_LOCAL))
-		      add_bypass_route(gw, pull.remote_address.address, false, create, destroy);
-		  }
-		else
-		  throw tun_win_setup("redirect-gateway error: cannot find gateway for bypass route");
-	      }
-
 	    create.add(new WinCmd("netsh interface ip add route 0.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
 	    create.add(new WinCmd("netsh interface ip add route 128.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
 	    destroy.add(new WinCmd("netsh interface ip delete route 0.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
