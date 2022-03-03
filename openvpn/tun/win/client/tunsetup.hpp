@@ -68,9 +68,10 @@ namespace openvpn {
     public:
       typedef RCPtr<Setup> Ptr;
 
-      Setup(openvpn_io::io_context& io_context_arg, bool wintun_arg=false)
+      Setup(openvpn_io::io_context& io_context_arg, bool wintun_arg, bool allow_local_dns_resolvers_arg)
 	: delete_route_timer(io_context_arg),
-	  wintun(wintun_arg) {}
+	  wintun(wintun_arg),
+	  allow_local_dns_resolvers(allow_local_dns_resolvers_arg) {}
 
       // Set up the TAP device
       virtual HANDLE establish(const TunBuilderCapture& pull,
@@ -135,6 +136,9 @@ namespace openvpn {
 
 	if (ring_buffer)
 	  register_rings(th(), ring_buffer);
+
+	if (!wintun && tap.index_defined())
+	  Util::flush_arp(tap.index, os);
 
 	return th.release();
       }
@@ -639,7 +643,7 @@ namespace openvpn {
 			}
 		    }
 		}
-	      if (dsfx.empty())
+	      if (dsfx.empty() && !allow_local_dns_resolvers)
 		dsfx.emplace_back(".");
 
 	      // DNS server list
@@ -656,8 +660,8 @@ namespace openvpn {
 	  // the TAP adapter.
 	  if (use_wfp && !split_dns && !openvpn_app_path.empty() && (dns.ipv4() || dns.ipv6()))
 	    {
-	      create.add(new ActionWFP(openvpn_app_path, tap.index, true, wfp));
-	      destroy.add(new ActionWFP(openvpn_app_path, tap.index, false, wfp));
+	      create.add(new ActionWFP(openvpn_app_path, tap.index, true, allow_local_dns_resolvers ,wfp));
+	      destroy.add(new ActionWFP(openvpn_app_path, tap.index, false, allow_local_dns_resolvers, wfp));
 	    }
 	}
 
@@ -948,6 +952,8 @@ namespace openvpn {
       AsioTimer delete_route_timer;
 
       bool wintun = false;
+
+      bool allow_local_dns_resolvers = false;
     };
   }
 }

@@ -52,7 +52,6 @@
 #endif
 
 #include <openvpn/dco/korekey.hpp>
-#include <openvpn/dco/protowrapper.hpp>
 
 // client-side DCO (Data Channel Offload) module for Linux/kovpn
 

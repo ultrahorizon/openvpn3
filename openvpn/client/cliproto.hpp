@@ -536,6 +536,9 @@ namespace openvpn {
 #else
 		  OPENVPN_LOG("Session token: [redacted]");
 #endif
+		  autologin_sessions = true;
+		  conf().set_xmit_creds(true);
+		  creds->set_replace_password_with_session_id(true);
 		  creds->set_session_id(username, sess_id);
 		}
 	    }
@@ -641,9 +644,11 @@ namespace openvpn {
 	    // If session token problem (such as expiration), and we have a cached
 	    // password, retry with it.  Otherwise, fail without retry.
 	    if (string::starts_with(reason, "SESSION:")
-		&& (autologin_sessions
-		    || (creds && creds->can_retry_auth_with_cached_password())))
+		&& ((creds && creds->can_retry_auth_with_cached_password())
+		    || autologin_sessions))
 	      {
+		if (creds && creds->session_id_defined())
+		  creds->purge_session_id();
 		log_reason = "SESSION_AUTH_FAILED";
 	      }
 	    else

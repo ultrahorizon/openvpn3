@@ -69,11 +69,37 @@ public:
     }
     kc.decrypt.cipher_key_size = kc.encrypt.cipher_key_size;
 
-    if (calg.mode() == CryptoAlgs::AEAD) {
-      kc.encrypt.cipher_key = verify_key(
-          "cipher encrypt", rkinfo.encrypt_cipher, kc.encrypt.cipher_key_size);
-      kc.decrypt.cipher_key = verify_key(
-          "cipher decrypt", rkinfo.decrypt_cipher, kc.decrypt.cipher_key_size);
+    if (kc.cipher_alg != CryptoAlgs::NONE)
+    {
+	kc.encrypt.cipher_key = verify_key("cipher encrypt", rkinfo.encrypt_cipher,
+					   kc.encrypt.cipher_key_size);
+	kc.decrypt.cipher_key = verify_key("cipher decrypt", rkinfo.decrypt_cipher,
+					   kc.decrypt.cipher_key_size);
+    }
+
+    switch (calg.mode()) {
+    case CryptoAlgs::CBC_HMAC:
+      // if CBC mode, process HMAC digest
+      {
+        const CryptoAlgs::Alg &halg = CryptoAlgs::get(ci.hmac_alg);
+        switch (ci.hmac_alg) {
+        case CryptoAlgs::SHA256:
+          kc.hmac_alg = OVPN_HMAC_ALG_SHA256;
+          break;
+        case CryptoAlgs::SHA512:
+          kc.hmac_alg = OVPN_HMAC_ALG_SHA512;
+          break;
+        case CryptoAlgs::NONE:
+          kc.hmac_alg = OVPN_HMAC_ALG_NONE;
+          break;
+        default:
+          OPENVPN_THROW(korekey_error,
+                        "HMAC alg "
+                            << halg.name()
+                            << " is not currently supported by ovpn-dco");
+        }
+        kc.encrypt.hmac_key_size = halg.size();
+        kc.decrypt.hmac_key_size = kc.encrypt.hmac_key_size;
 
       set_nonce_tail("AEAD nonce tail encrypt", kc.encrypt.nonce_tail,
                      sizeof(kc.encrypt.nonce_tail), rkinfo.encrypt_hmac);
