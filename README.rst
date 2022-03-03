@@ -29,7 +29,7 @@ project.  Thus when viewing commits with ``git log``, it may seem cluttered if
 trying to just view UH VPN specific patches.  To see these UH VPN specific
 patches use the following ``git log`` command::
 
-  $ git log --first-parent --no-merges uhvpn-0..uh-vpn-master
+  $ git log --first-parent uhvpn-0..uh-vpn-master
 
 Alternatively if you wish to get an idea of the git structure it is advisable
 to try the following command which illustrates things::
