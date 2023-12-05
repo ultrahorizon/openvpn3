@@ -4,7 +4,7 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2020 OpenVPN Inc.
+//    Copyright (C) 2012-2022 OpenVPN Inc.
 //
 //    This program is free software: you can redistribute it and/or modify
 //    it under the terms of the GNU Affero General Public License Version 3
@@ -21,34 +21,43 @@
 
 #pragma once
 
-#include <vector>
 #include <memory>
 #include <sstream>
+#include <vector>
 
-#include <openvpn/common/size.hpp>
-#include <openvpn/common/exception.hpp>
-#include <openvpn/common/to_string.hpp>
 #include <openvpn/buffer/asiobuf.hpp>
+#include <openvpn/common/exception.hpp>
+#include <openvpn/common/size.hpp>
+#include <openvpn/common/to_string.hpp>
 #include <openvpn/time/time.hpp>
 #include <openvpn/transport/client/transbase.hpp>
-#include <openvpn/tun/client/tunbase.hpp>
-#include <openvpn/tun/builder/capture.hpp>
-#include <openvpn/tun/linux/client/tunmethods.hpp>
 #include <openvpn/transport/dco.hpp>
+#include <openvpn/tun/tunmtu.hpp>
+#include <openvpn/tun/builder/capture.hpp>
+#include <openvpn/tun/client/tunbase.hpp>
+
+#ifndef ENABLE_OVPNDCOWIN
+#include <openvpn/tun/linux/client/tunmethods.hpp>
+#endif
 
 #ifdef ENABLE_KOVPN
-#include <openvpn/kovpn/kovpn.hpp>
-#include <openvpn/kovpn/kostats.hpp>
-#include <openvpn/kovpn/rps_xps.hpp>
 #include <openvpn/kovpn/kodevtun.hpp>
+#include <openvpn/kovpn/kostats.hpp>
+#include <openvpn/kovpn/kovpn.hpp>
+#include <openvpn/kovpn/rps_xps.hpp>
 #elif ENABLE_OVPNDCO
-#include <openvpn/dco/key.hpp>
-#include <openvpn/tun/linux/client/sitnl.hpp>
-#include <openvpn/common/uniqueptr.hpp>
-#include <openvpn/tun/linux/client/genl.hpp>
 #include <openvpn/buffer/buffer.hpp>
+#include <openvpn/common/uniqueptr.hpp>
+#include <openvpn/dco/key.hpp>
+#include <openvpn/tun/linux/client/genl.hpp>
+#include <openvpn/tun/linux/client/sitnl.hpp>
+#elif ENABLE_OVPNDCOWIN
+#include <bcrypt.h>
+#include <openvpn/dco/key.hpp>
+#include <openvpn/dco/ovpn-dco.h>
+#include <openvpn/win/modname.hpp>
 #else
-#error either ENABLE_KOVPN or ENABLE_OVPNDCO must be defined
+#error either ENABLE_KOVPN, ENABLE_OVPNDCO or ENABLE_OVPNDCOWIN must be defined
 #endif
 
 #include <openvpn/dco/korekey.hpp>
@@ -56,337 +65,293 @@
 // client-side DCO (Data Channel Offload) module for Linux/kovpn
 
 namespace openvpn {
-  namespace DCOTransport {
+namespace DCOTransport {
+enum
+{
+    OVPN_PEER_ID_UNDEF = 0x00FFFFFF,
+};
 
-    OPENVPN_EXCEPTION(dco_error);
+class ClientConfig : public DCO,
+                     public TransportClientFactory,
+                     public TunClientFactory
+{
+  public:
+    typedef RCPtr<ClientConfig> Ptr;
 
-    class ClientConfig : public DCO,
-			 public TransportClientFactory,
-			 public TunClientFactory
+    std::string dev_name;
+
+    DCO::TransportConfig transport;
+    DCO::TunConfig tun;
+
+    unsigned int ping_restart_override = 0;
+
+    void process_push(const OptionList &opt) override
     {
-    public:
-      typedef RCPtr<ClientConfig> Ptr;
+        transport.remote_list->process_push(opt);
+    }
 
-      std::string dev_name;
-
-      DCO::TransportConfig transport;
-      DCO::TunConfig tun;
-
-      unsigned int ping_restart_override = 0;
-
-      virtual TunClientFactory::Ptr new_tun_factory(const DCO::TunConfig& conf, const OptionList& opt) override
-      {
-	tun = conf;
-
-	// set a default MTU
-	if (!tun.tun_prop.mtu)
-	  tun.tun_prop.mtu = 1500;
-
-	// parse "dev" option
-	{
-	  const Option* dev = opt.get_ptr("dev");
-	  if (dev)
-	    dev_name = dev->get(1, 64);
-	  else
-	    dev_name = "ovpnc";
-	}
-
-	// parse ping-restart-override
-	ping_restart_override = opt.get_num<decltype(ping_restart_override)>("ping-restart-override", 1, ping_restart_override, 0, 3600);
-
-	return TunClientFactory::Ptr(this);
-      }
-
-      virtual TransportClientFactory::Ptr new_transport_factory(const DCO::TransportConfig& conf) override
-      {
-	transport = conf;
-	return TransportClientFactory::Ptr(this);
-      }
-
-      virtual TunClient::Ptr new_tun_client_obj(openvpn_io::io_context& io_context,
-						TunClientParent& parent,
-						TransportClient* transcli) override;
-
-      virtual TransportClient::Ptr new_transport_client_obj(openvpn_io::io_context& io_context,
-							    TransportClientParent* parent) override;
-
-      static DCO::Ptr new_controller()
-      {
-	return new ClientConfig();
-      }
-
-    protected:
-      ClientConfig() = default;
-    };
-
-    class Client : public TransportClient,
-		   public TunClient,
-		   public AsyncResolvableUDP
+    virtual void finalize(const bool disconnected) override
     {
-      friend class ClientConfig;
+#ifdef ENABLE_OVPNDCOWIN
+        if (disconnected)
+            tun.tun_persist.reset();
+#endif
+    }
 
-      typedef RCPtr<Client> Ptr;
+    virtual TunClientFactory::Ptr
+    new_tun_factory(const DCO::TunConfig &conf, const OptionList &opt) override
+    {
+        tun = conf;
 
-    public:
-      // transport methods
+        // set a default MTU
+        if (!tun.tun_prop.mtu)
+            tun.tun_prop.mtu = TUN_MTU_DEFAULT;
 
-      virtual bool transport_send_queue_empty() override
-      {
-	return false;
-      }
+        // parse "dev" option
+        {
+            const Option *dev = opt.get_ptr("dev");
+            if (dev)
+                dev_name = dev->get(1, 64);
+            else
+                dev_name = "ovpnc";
+        }
 
-      virtual bool transport_has_send_queue() override
-      {
-	return false;
-      }
+        // parse ping-restart-override
+        ping_restart_override = opt.get_num<decltype(ping_restart_override)>(
+            "ping-restart-override", 1, ping_restart_override, 0, 3600);
 
-      virtual unsigned int transport_send_queue_size() override
-      {
-	return 0;
-      }
+        return TunClientFactory::Ptr(this);
+    }
 
-      virtual void reset_align_adjust(const size_t align_adjust) override
-      {
-      }
+    virtual TransportClientFactory::Ptr
+    new_transport_factory(const DCO::TransportConfig &conf) override
+    {
+        transport = conf;
+        return TransportClientFactory::Ptr(this);
+    }
 
-      virtual void transport_stop_requeueing() override
-      {
-      }
+    virtual TunClient::Ptr new_tun_client_obj(openvpn_io::io_context &io_context,
+                                              TunClientParent &parent,
+                                              TransportClient *transcli) override;
 
-      virtual void server_endpoint_info(std::string& host, std::string& port, std::string& proto, std::string& ip_addr) const override
-      {
-	host = server_host;
-	port = server_port;
-	const IP::Addr addr = server_endpoint_addr();
-	proto = config->transport.protocol.is_tcp() ? "TCP" : "UDP";
-	proto += addr.version_string();
-	proto += "-DCO";
-	ip_addr = addr.to_string();
-      }
+    virtual TransportClient::Ptr
+    new_transport_client_obj(openvpn_io::io_context &io_context,
+                             TransportClientParent *parent) override;
 
-      virtual IP::Addr server_endpoint_addr() const override
-      {
-	if (proto)
-	  return proto->server_endpoint_addr();
-	else
-	  return IP::Addr();
-      }
+    static DCO::Ptr new_controller(TunBuilderBase *tb)
+    {
+        auto ctrl = new ClientConfig();
+        if (ctrl)
+            ctrl->builder = tb;
+        return ctrl;
+    }
 
-      virtual Protocol transport_protocol() const override
-      {
-	switch (server_endpoint_addr().version())
-	  {
-	  case IP::Addr::V4:
-	    return Protocol(Protocol::UDPv4);
-	  case IP::Addr::V6:
-	    return Protocol(Protocol::UDPv6);
-	  default:
-	    return Protocol();
-	  }
-      }
+  protected:
+    ClientConfig() = default;
+};
 
-      virtual void stop() override
-      {
-	stop_();
-      }
+class Client : public TransportClient,
+               public TunClient,
+               public AsyncResolvableUDP
+{
+    friend class ClientConfig;
 
-      // tun methods
+    typedef RCPtr<Client> Ptr;
 
-      virtual void set_disconnect() override
-      {
-      }
+  public:
+    // transport methods
 
-      virtual bool tun_send(BufferAllocated& buf) override // return true if send succeeded
-      {
-	return false;
-      }
+    virtual bool transport_send_queue_empty() override
+    {
+        return false;
+    }
 
-      virtual std::string vpn_ip4() const override
-      {
-	if (state->vpn_ip4_addr.specified())
-	  return state->vpn_ip4_addr.to_string();
-	else
-	  return "";
-      }
+    virtual bool transport_has_send_queue() override
+    {
+        return false;
+    }
 
-      virtual std::string vpn_ip6() const override
-      {
-	if (state->vpn_ip6_addr.specified())
-	  return state->vpn_ip6_addr.to_string();
-	else
-	  return "";
-      }
+    virtual unsigned int transport_send_queue_size() override
+    {
+        return 0;
+    }
 
-      virtual std::string vpn_gw4() const override
-      {
-	if (state->vpn_ip4_gw.specified())
-	  return state->vpn_ip4_gw.to_string();
-	else
-	  return "";
-      }
+    virtual void reset_align_adjust(const size_t align_adjust) override
+    {
+    }
 
-      virtual std::string vpn_gw6() const override
-      {
-	if (state->vpn_ip6_gw.specified())
-	  return state->vpn_ip6_gw.to_string();
-	else
-	  return "";
-      }
+    virtual void transport_stop_requeueing() override
+    {
+    }
 
-    protected:
-      Client(openvpn_io::io_context& io_context_arg,
-	     ClientConfig* config_arg,
-	     TransportClientParent* parent_arg)
-	: AsyncResolvableUDP(io_context_arg),
-	  io_context(io_context_arg),
-	  halt(false),
-	  state(new TunProp::State()),
-	  config(config_arg),
-	  transport_parent(parent_arg),
-	  tun_parent(nullptr),
-	  peer_id(-1)
-      {
-      }
+    virtual void server_endpoint_info(std::string &host,
+                                      std::string &port,
+                                      std::string &proto,
+                                      std::string &ip_addr) const override
+    {
+        host = server_host;
+        port = server_port;
+        const IP::Addr addr = server_endpoint_addr();
+        proto = std::string(transport_protocol().str());
+        proto += "-DCO";
+        ip_addr = addr.to_string();
+    }
 
-      virtual void transport_reparent(TransportClientParent* parent_arg) override
-      {
-	transport_parent = parent_arg;
-      }
+    virtual void stop() override
+    {
+        stop_();
+    }
 
-      void transport_start_udp()
-      {
-	transport_start_impl(false);
-      }
+    // tun methods
 
-      void transport_start_tcp()
-      {
-	transport_start_impl(true);
-      }
+    virtual void set_disconnect() override
+    {
+    }
 
-      void transport_start_impl(bool tcp)
-      {
-	if (tcp)
-	  proto.reset(new TCP(io_context));
-	else
-	  proto.reset(new UDP(io_context));
+    virtual bool
+    tun_send(BufferAllocated &buf) override // return true if send succeeded
+    {
+        return false;
+    }
 
-	if (config->transport.remote_list->endpoint_available(&server_host, &server_port, nullptr))
-	  {
-	    start_connect();
-	  }
-	else
-	  {
-	    transport_parent->transport_pre_resolve();
-	    async_resolve_name(server_host, server_port);
-	  }
-      }
+    virtual std::string vpn_ip4() const override
+    {
+        if (state->vpn_ip4_addr.specified())
+            return state->vpn_ip4_addr.to_string();
+        else
+            return "";
+    }
 
-      // called after DNS resolution has succeeded or failed
-      void resolve_callback(const openvpn_io::error_code& error,
-			    openvpn_io::ip::udp::resolver::results_type results) override
-      {
-	if (!halt)
-	  {
-	    if (!error)
-	      {
-		// save resolved endpoint list in remote_list
-		config->transport.remote_list->set_endpoint_range(results);
-		start_connect();
-	      }
-	    else
-	      {
-		std::ostringstream os;
-		os << "DNS resolve error on '" << server_host << "' for session: " << error.message();
-		config->transport.stats->error(Error::RESOLVE_ERROR);
-		stop_();
-		transport_parent->transport_error(Error::UNDEF, os.str());
-	      }
-	  }
-      }
+    virtual std::string vpn_ip6() const override
+    {
+        if (state->vpn_ip6_addr.specified())
+            return state->vpn_ip6_addr.to_string();
+        else
+            return "";
+    }
 
-      void start_connect()
-      {
-	proto->get_endpoint(config->transport.remote_list);
-	OPENVPN_LOG("Contacting " << proto->server_endpoint_addr() << " via " << proto->proto());
-	transport_parent->transport_wait();
-	proto->open();
+    virtual std::string vpn_gw4() const override
+    {
+        if (state->vpn_ip4_gw.specified())
+            return state->vpn_ip4_gw.to_string();
+        else
+            return "";
+    }
 
-	if (config->transport.socket_protect)
-	  {
-	    if (!config->transport.socket_protect->socket_protect(proto->native_handle(), server_endpoint_addr()))
-	      {
-		stop();
-		std::ostringstream os;
-		os << "socket_protect error (";
-		os << proto->proto();
-		os << ")";
-		transport_parent->transport_error(Error::UNDEF, os.str());
-		return;
-	      }
-	  }
+    virtual std::string vpn_gw6() const override
+    {
+        if (state->vpn_ip6_gw.specified())
+            return state->vpn_ip6_gw.to_string();
+        else
+            return "";
+    }
 
-	proto->async_connect([self=Ptr(this)](const openvpn_io::error_code &error) {
-	    self->start_impl_udp(error);
-	});
-      }
+    int vpn_mtu() const override
+    {
+        return state->mtu;
+    }
 
-      // start I/O on UDP socket
-      virtual void start_impl_udp(const openvpn_io::error_code& error) = 0;
+  protected:
+    Client(openvpn_io::io_context &io_context_arg,
+           ClientConfig *config_arg,
+           TransportClientParent *parent_arg)
+        : AsyncResolvableUDP(io_context_arg), io_context(io_context_arg),
+          halt(false), state(new TunProp::State()), config(config_arg),
+          transport_parent(parent_arg), tun_parent(nullptr),
+          peer_id(OVPN_PEER_ID_UNDEF)
+    {
+    }
 
-      virtual void stop_() = 0;
+    virtual void transport_reparent(TransportClientParent *parent_arg) override
+    {
+        transport_parent = parent_arg;
+    }
 
-      openvpn_io::io_context& io_context;
-      bool halt;
+    virtual void stop_() = 0;
 
-      TunProp::State::Ptr state;
+    openvpn_io::io_context &io_context;
+    bool halt;
 
-      ClientConfig::Ptr config;
-      TransportClientParent* transport_parent;
-      TunClientParent* tun_parent;
+    TunProp::State::Ptr state;
 
-      ProtoBase::Ptr proto;
+    ClientConfig::Ptr config;
+    TransportClientParent *transport_parent;
+    TunClientParent *tun_parent;
 
-      ActionList::Ptr remove_cmds;
+    ActionList::Ptr remove_cmds;
 
-      std::string server_host;
-      std::string server_port;
+    std::string server_host;
+    std::string server_port;
 
-      int peer_id;
-    };
+    uint32_t peer_id;
+};
 
 #ifdef ENABLE_KOVPN
-    #include <openvpn/kovpn/kovpncli.hpp>
-    inline DCO::Ptr new_controller()
-    {
-      return KovpnClientConfig::new_controller();
-    }
-    inline TransportClient::Ptr ClientConfig::new_transport_client_obj(openvpn_io::io_context& io_context,
-								       TransportClientParent* parent)
-    {
-      return TransportClient::Ptr(new KovpnClient(io_context, this, parent));
-    }
+#include <openvpn/kovpn/kovpncli.hpp>
+inline DCO::Ptr new_controller(TunBuilderBase *)
+{
+    return KovpnClientConfig::new_controller();
+}
+inline TransportClient::Ptr
+ClientConfig::new_transport_client_obj(openvpn_io::io_context &io_context,
+                                       TransportClientParent *parent)
+{
+    return TransportClient::Ptr(new KovpnClient(io_context, this, parent));
+}
 #elif ENABLE_OVPNDCO
-    #include <openvpn/dco/ovpndcocli.hpp>
-    inline DCO::Ptr new_controller()
+#include <openvpn/dco/ovpndcocli.hpp>
+inline DCO::Ptr new_controller(TunBuilderBase *tb)
+{
+    if (!OvpnDcoClient::available(tb))
+        return nullptr;
+
+    CryptoAlgs::allow_dc_algs({CryptoAlgs::CHACHA20_POLY1305,
+                               CryptoAlgs::AES_128_GCM,
+                               CryptoAlgs::AES_192_GCM,
+                               CryptoAlgs::AES_256_GCM});
+    return ClientConfig::new_controller(tb);
+}
+inline TransportClient::Ptr
+ClientConfig::new_transport_client_obj(openvpn_io::io_context &io_context,
+                                       TransportClientParent *parent)
+{
+    return TransportClient::Ptr(new OvpnDcoClient(io_context, this, parent));
+}
+#elif ENABLE_OVPNDCOWIN
+#include <openvpn/dco/ovpndcowincli.hpp>
+inline DCO::Ptr new_controller(TunBuilderBase *tb)
+{
+    if (!OvpnDcoWinClient::available())
+        return nullptr;
+
+    std::list<CryptoAlgs::Type> algs{CryptoAlgs::AES_128_GCM, CryptoAlgs::AES_192_GCM, CryptoAlgs::AES_256_GCM};
+    BCRYPT_ALG_HANDLE h;
+    NTSTATUS status = BCryptOpenAlgorithmProvider(&h, L"CHACHA20_POLY1305", NULL, 0);
+    if (BCRYPT_SUCCESS(status))
     {
-      return ClientConfig::new_controller();
+        BCryptCloseAlgorithmProvider(h, 0);
+        algs.push_back(CryptoAlgs::CHACHA20_POLY1305);
     }
-    inline TransportClient::Ptr ClientConfig::new_transport_client_obj(openvpn_io::io_context& io_context,
-								       TransportClientParent* parent)
-    {
-      return TransportClient::Ptr(new OvpnDcoClient(io_context, this, parent));
-    }
-#else
-#error either ENABLE_KOVPN or ENABLE_OVPNDCO must be defined
+
+    CryptoAlgs::allow_dc_algs(algs);
+    return ClientConfig::new_controller(nullptr);
+}
+inline TransportClient::Ptr
+ClientConfig::new_transport_client_obj(openvpn_io::io_context &io_context,
+                                       TransportClientParent *parent)
+{
+    return TransportClient::Ptr(new OvpnDcoWinClient(io_context, this, parent));
+}
 #endif
 
-    inline TunClient::Ptr ClientConfig::new_tun_client_obj(openvpn_io::io_context& io_context,
-							   TunClientParent& parent,
-							   TransportClient* transcli)
-    {
-      Client* cli = static_cast<Client*>(transcli);
-      cli->tun_parent = &parent;
-      return TunClient::Ptr(cli);
-    }
-  }
+inline TunClient::Ptr
+ClientConfig::new_tun_client_obj(openvpn_io::io_context &io_context,
+                                 TunClientParent &parent,
+                                 TransportClient *transcli)
+{
+    Client *cli = static_cast<Client *>(transcli);
+    cli->tun_parent = &parent;
+    return TunClient::Ptr(cli);
 }
+} // namespace DCOTransport
+} // namespace openvpn

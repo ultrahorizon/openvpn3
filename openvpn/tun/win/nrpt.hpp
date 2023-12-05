@@ -4,7 +4,7 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2020 OpenVPN Inc.
+//    Copyright (C) 2012-2022 OpenVPN Inc.
 //
 //    This program is free software: you can redistribute it and/or modify
 //    it under the terms of the GNU Affero General Public License Version 3
@@ -38,171 +38,170 @@
 #include <openvpn/win/winerr_helpers.hpp>
 
 namespace openvpn {
-  namespace TunWin {
+namespace TunWin {
 
-    // NRPT rules described here: https://msdn.microsoft.com/en-us/library/ff957356.aspx
-    class NRPT
+// NRPT rules described here: https://msdn.microsoft.com/en-us/library/ff957356.aspx
+class NRPT
+{
+  public:
+    OPENVPN_EXCEPTION(nrpt_error);
+
+    static void create_rule(const std::vector<std::string> names, const std::vector<std::string> dns_servers)
     {
-    public:
-      OPENVPN_EXCEPTION(nrpt_error);
+        Win::RegKey key;
 
-      static void create_rule(const std::vector<std::string> names, const std::vector<std::string> dns_servers)
-      {
-	Win::RegKey key;
+        for (size_t i = 0; i < names.size(); ++i)
+        {
+            // open/create the key
+            {
+                std::ostringstream ss;
+                ss << dnsPolicyConfig() << "\\" << policyPrefix() << "-" << i;
+                auto key_name = ss.str();
 
-	for (size_t i = 0; i < names.size(); ++ i)
-	  {
-	    // open/create the key
-	    {
-	      std::ostringstream ss;
-	      ss << dnsPolicyConfig() << "\\" << policyPrefix() << "-" << i;
-	      auto key_name = ss.str();
+                const LONG status = ::RegCreateKeyA(HKEY_LOCAL_MACHINE, key_name.c_str(), key.ref());
+                openvpn::Win::check_reg_error<nrpt_error>(status, key_name);
+            }
 
-	      const LONG status = ::RegCreateKeyA(HKEY_LOCAL_MACHINE, key_name.c_str(), key.ref());
-	      openvpn::Win::check_reg_error<nrpt_error>(status, key_name);
-	    }
+            // Name
+            {
+                std::wstring name(wstring::from_utf8(names[i]));
+                name += L'\0';
+                const LONG status = ::RegSetValueExW(key(),
+                                                     L"Name",
+                                                     0,
+                                                     REG_MULTI_SZ,
+                                                     (const BYTE *)name.c_str(),
+                                                     (name.length() + 1) * 2);
+                openvpn::Win::check_reg_error<nrpt_error>(status, "Name");
+            }
 
-	    // Name
-	    {
-	      std::wstring name(wstring::from_utf8(names[i]));
-	      name += L'\0';
-	      const LONG status = ::RegSetValueExW(key(),
-						   L"Name",
-						   0,
-						   REG_MULTI_SZ,
-						   (const BYTE *)name.c_str(),
-						   (name.length()+1)*2);
-	      openvpn::Win::check_reg_error<nrpt_error>(status, "Name");
-	    }
+            // GenericDNSServers
+            {
+                const std::wstring dns_servers_joined = wstring::from_utf8(string::join(dns_servers, ";"));
+                const LONG status = ::RegSetValueExW(key(),
+                                                     L"GenericDNSServers",
+                                                     0,
+                                                     REG_SZ,
+                                                     (const BYTE *)dns_servers_joined.c_str(),
+                                                     (dns_servers_joined.length() + 1) * 2);
+                openvpn::Win::check_reg_error<nrpt_error>(status, "GenericDNSServers");
+            }
 
-	    // GenericDNSServers
-	    {
-	      const std::wstring dns_servers_joined = wstring::from_utf8(string::join(dns_servers, ";"));
-	      const LONG status = ::RegSetValueExW(key(),
-						   L"GenericDNSServers",
-						   0,
-						   REG_SZ,
-						   (const BYTE *)dns_servers_joined.c_str(),
-						   (dns_servers_joined.length()+1)*2);
-	      openvpn::Win::check_reg_error<nrpt_error>(status, "GenericDNSServers");
-	    }
+            // ConfigOptions
+            {
+                const DWORD value = 0x8; // Only the Generic DNS server option (that is, the option defined in section 2.2.2.13) is specified.
+                const LONG status = ::RegSetValueExW(key(),
+                                                     L"ConfigOptions",
+                                                     0,
+                                                     REG_DWORD,
+                                                     (const BYTE *)&value,
+                                                     sizeof(value));
+                openvpn::Win::check_reg_error<nrpt_error>(status, "ConfigOptions");
+            }
 
-	    // ConfigOptions
-	    {
-	      const DWORD value = 0x8; // Only the Generic DNS server option (that is, the option defined in section 2.2.2.13) is specified.
-	      const LONG status = ::RegSetValueExW(key(),
-						   L"ConfigOptions",
-						   0,
-						   REG_DWORD,
-						   (const BYTE *)&value,
-						   sizeof(value));
-	      openvpn::Win::check_reg_error<nrpt_error>(status, "ConfigOptions");
-	    }
+            // Version
+            {
+                const DWORD value = 0x2;
+                const LONG status = ::RegSetValueExW(key(),
+                                                     L"Version",
+                                                     0,
+                                                     REG_DWORD,
+                                                     (const BYTE *)&value,
+                                                     sizeof(value));
+                openvpn::Win::check_reg_error<nrpt_error>(status, "Version");
+            }
+        }
+    }
 
-	    // Version
-	    {
-	      const DWORD value = 0x2;
-	      const LONG status = ::RegSetValueExW(key(),
-						   L"Version",
-						   0,
-						   REG_DWORD,
-						   (const BYTE *)&value,
-						   sizeof(value));
-	      openvpn::Win::check_reg_error<nrpt_error>(status, "Version");
-	    }
-	  }
-      }
+    static bool delete_rule(unsigned int &remove_count, std::ostream& log)
+    {
+        Win::RegKeyEnumerator keys(HKEY_LOCAL_MACHINE, dnsPolicyConfig());
 
-      static bool delete_rule(unsigned int &remove_count, std::ostream& log)
-      {
-	Win::RegKeyEnumerator keys(HKEY_LOCAL_MACHINE, dnsPolicyConfig());
+        remove_count = 0;
+        for (const auto &key : keys)
+        {
+            // remove only own policies
+            if (key.find(policyPrefix()) == std::string::npos)
+                continue;
 
-	remove_count = 0;
-	for (const auto& key : keys)
-	  {
-	    // remove only own policies
-	    if (key.find(policyPrefix()) == std::string::npos)
-	      continue;
+            std::ostringstream ss;
+            ss << dnsPolicyConfig() << "\\" << key;
+            auto path = ss.str();
+            LSTATUS status = ::RegDeleteTreeA(HKEY_LOCAL_MACHINE, path.c_str());
+            if (status == ERROR_SUCCESS) {
+                remove_count++;
+            } else {
+                log << "Failed to remove " << path << "; "
+                    << openvpn::Win::win32_error_to_string(status) << std::endl;
+            }
+        }
 
-	    std::ostringstream ss;
-	    ss << dnsPolicyConfig() << "\\" << key;
-	    auto path = ss.str();
-	    LSTATUS status = ::RegDeleteTreeA(HKEY_LOCAL_MACHINE, path.c_str());
-	    if (status == ERROR_SUCCESS) {
-		remove_count++;
-	    } else {
-		log << "Failed to remove " << path << "; "
-		    << openvpn::Win::win32_error_to_string(status) << std::endl;
-	    }
-	  }
+        return true;
+    }
 
-	return true;
-      }
+  private:
+    static const char *dnsPolicyConfig()
+    {
+        static const char subkey[] = "SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters\\DnsPolicyConfig";
+        return subkey;
+    }
 
-    private:
-      static const char *dnsPolicyConfig()
-      {
-	static const char subkey[] = "SYSTEM\\CurrentControlSet\\Services\\Dnscache\\Parameters\\DnsPolicyConfig";
-	return subkey;
-      }
+    static const char *policyPrefix()
+    {
+        static const char prefix[] = "UHVPNDNSRouting";
+        return prefix;
+    }
 
-      static const char *policyPrefix()
-      {
-	static const char prefix[] = "UHVPNDNSRouting";
-	return prefix;
-      }
-
-    public:
-      class ActionCreate : public Action
-      {
+  public:
+    class ActionCreate : public Action
+    {
       public:
-	ActionCreate(const std::vector<std::string>& names_arg,
-		     const std::vector<std::string>& dns_servers_arg)
-	  : names(names_arg),
-	    dns_servers(dns_servers_arg)
-	{
-	}
+        ActionCreate(const std::vector<std::string> &names_arg,
+                     const std::vector<std::string> &dns_servers_arg)
+            : names(names_arg),
+              dns_servers(dns_servers_arg)
+        {
+        }
 
-	virtual void execute(std::ostream& log) override
-	{
-	  log << to_string() << std::endl;
-	  create_rule(names, dns_servers);
-	}
+        virtual void execute(std::ostream &log) override
+        {
+            log << to_string() << std::endl;
+            create_rule(names, dns_servers);
+        }
 
-	virtual std::string to_string() const override
-	{
-	  std::ostringstream os;
-	  os << "NRPT::ActionCreate"
-	     << " names=[" << string::join(names, ",") << "]"
-	     << " dns_servers=[" << string::join(dns_servers, ",") << "]";
-	  return os.str();
-	}
+        virtual std::string to_string() const override
+        {
+            std::ostringstream os;
+            os << "NRPT::ActionCreate"
+               << " names=[" << string::join(names, ",") << "]"
+               << " dns_servers=[" << string::join(dns_servers, ",") << "]";
+            return os.str();
+        }
 
       private:
-	const std::vector<std::string> names;
-	const std::vector<std::string> dns_servers;
-      };
-
-      class ActionDelete : public Action
-      {
-      public:
-	virtual void execute(std::ostream& log) override
-	{
-	  log << to_string() << " running..." << std::endl;
-	  unsigned int count = 0;
-	  delete_rule(count, log);
-	  log << to_string() << " deleted " << count << " rules." << std::endl;
-	}
-
-	virtual std::string to_string() const override
-	{
-	  return "NRPT::ActionDelete";
-	}
-      };
-
+        const std::vector<std::string> names;
+        const std::vector<std::string> dns_servers;
     };
 
-  }
-}
+    class ActionDelete : public Action
+    {
+      public:
+        virtual void execute(std::ostream &log) override
+        {
+            log << to_string() << " running..." << std::endl;
+            unsigned int count = 0;
+            delete_rule(count, log);
+            log << to_string() << " deleted " << count << " rules." << std::endl;
+        }
+
+        virtual std::string to_string() const override
+        {
+            return "NRPT::ActionDelete";
+        }
+    };
+};
+
+} // namespace TunWin
+} // namespace openvpn
 
 #endif
