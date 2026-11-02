@@ -4,21 +4,13 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
 
-#include "test_common.h"
+
+#include "test_common.hpp"
 
 #include <openvpn/transport/client/httpcli.hpp>
 
@@ -45,7 +37,7 @@ TEST(HttpProxyClient, Options)
     ASSERT_EQ(po->password, "pazzword");
     ASSERT_EQ(po->http_version, "1.1");
     ASSERT_EQ(po->user_agent, "Mosaic/0.9");
-    ASSERT_EQ(po->headers.size(), 1);
+    ASSERT_EQ(po->headers.size(), 1U);
     ASSERT_EQ(po->headers.at(0)->p1, "X-Greeting");
     ASSERT_EQ(po->headers.at(0)->p2, "Hi mom!");
 

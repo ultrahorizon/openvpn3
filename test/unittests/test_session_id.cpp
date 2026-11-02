@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <openvpn/common/sess_id.hpp>
 #include <openvpn/openssl/util/tokenencrypt.hpp>
@@ -7,14 +7,14 @@
 
 using namespace openvpn;
 
-TEST(sessid, test1)
+TEST(Sessid, Test1)
 {
-    SSLLib::RandomAPI rng(false);
+    SSLLib::RandomAPI rng;
 
     // test 1
     {
         const SessionID64 sid1(rng);
-        // std::cout << "SID1: " << sid1 << std::endl;
+        // std::cout << "SID1: " << sid1 << "\n";
 
         const SessionID64 sid2(sid1.to_string());
         ASSERT_TRUE(sid1.defined() && sid2.defined()) << "FAIL sid1 or sid2 is undefined";
@@ -26,41 +26,40 @@ TEST(sessid, test1)
 
         for (int i = 1; i <= 4; ++i)
         {
-            // std::cout << "---- " << i << " ----" << std::endl;
+            // std::cout << "---- " << i << " ----\n";
             const TokenEncrypt::Key key(rng);
             TokenEncryptDecrypt ted(key);
             const SessionID128 sid3_enc(sid3, ted.encrypt);
-            // std::cout << "SID3 (enc): " << sid3_enc << std::endl;
+            // std::cout << "SID3 (enc): " << sid3_enc << "\n";
             const SessionID128 sid3_dec(sid3_enc, ted.decrypt);
-            // std::cout << "SID3 (dec): " << sid3_dec << std::endl;
+            // std::cout << "SID3 (dec): " << sid3_dec << "\n";
         }
     }
 }
-TEST(sessid, test2)
+TEST(Sessid, Test2)
 {
-    SSLLib::RandomAPI rng(false);
+    SSLLib::RandomAPI rng;
     {
         const SessionID64 sid1(rng);
-        // std::cout << "SID1: " << sid1 << std::endl;
+        // std::cout << "SID1: " << sid1 << "\n";
         const SessionID128 sid2(rng);
-        // std::cout << "SID2: " << sid2 << std::endl;
+        // std::cout << "SID2: " << sid2 << "\n";
 
         const SessionID128 sid1_exp(sid1);
-        // std::cout << "SID1_EXP: " << sid1_exp << std::endl;
+        // std::cout << "SID1_EXP: " << sid1_exp << "\n";
         const SessionID64 sid2_trunc(sid2);
-        // std::cout << "SID2_TRUNC: " << sid2_trunc << std::endl;
+        // std::cout << "SID2_TRUNC: " << sid2_trunc << "\n";
     }
 }
 
-TEST(sessid, test3)
+TEST(Sessid, Test3)
 {
     const SessionID64 ns;
     ASSERT_FALSE(ns.defined()) << "FAIL default constructed SessionID is defined";
 }
 
-TEST(sessid, test4)
+TEST(Sessid, Test4)
 {
-    SSLLib::RandomAPI rng(false);
     const SessionID128 x;
     const SessionID128 a("YmtN7B2edrDRlefk3vQ_YQ..");
     const SessionID128 b("YmtN7B2edrDRlefk3vQ_YA..");
@@ -95,9 +94,9 @@ TEST(sessid, test4)
     ASSERT_FALSE(s2) << "test4: shouldn't have found s2";
 }
 
-TEST(sessid, speed)
+TEST(Sessid, Speed)
 {
-    SSLLib::RandomAPI rng(false);
+    SSLLib::RandomAPI rng;
 
     const SessionID128 sid(rng);
     const TokenEncrypt::Key key(rng);
@@ -117,8 +116,8 @@ struct SessionID : public SessionID128
         // dump("default");
     }
 
-    SessionID(RandomAPI &rng)
-        : SessionID128(rng, true)
+    SessionID(StrongRandomAPI &rng)
+        : SessionID128(rng)
     {
         // dump("rng");
     }
@@ -130,14 +129,14 @@ struct SessionID : public SessionID128
 
     void dump(const char *prefix) const
     {
-        std::cout << prefix << " : " << to_string() << std::endl;
+        std::cout << prefix << " : " << to_string() << '\n';
     }
 };
 
 class Session
 {
   public:
-    Session(RandomAPI &rng)
+    Session(StrongRandomAPI &rng)
         : sid(rng)
     {
     }
@@ -158,11 +157,11 @@ std::string test(Session *session)
     return "Name: " + nam + " SessID: " + sid.to_string();
 }
 
-TEST(sessid, refscope1)
+TEST(Sessid, Refscope1)
 {
-    MTRand rng(123456789);
-    Session sess(rng);
-    EXPECT_EQ("Name: myname SessID: DsiRkfGnT1l1WtMoM59SRA..", test(&sess));
+    FakeSecureRand fake_rng(0x42);
+    Session sess(fake_rng);
+    EXPECT_EQ("Name: myname SessID: QkNERUZHSElKS0xNTk9QUQ..", test(&sess));
     EXPECT_EQ("Name: myname SessID: AAAAAAAAAAAAAAAAAAAAAA..", test(nullptr));
 }
 
@@ -182,12 +181,12 @@ static void tryit(RandomAPI &rng, TokenEncryptDecrypt &encdec)
     ASSERT_TRUE(::memcmp(data1, data3, TokenEncrypt::Key::SIZE) == 0);
 }
 
-TEST(sessid, tokenEncrypt)
+TEST(Sessid, TokenEncrypt)
 {
-    RandomAPI::Ptr rng(new SSLLib::RandomAPI(false));
-    const TokenEncrypt::Key key(*rng);
+    SSLLib::RandomAPI rng;
+    const TokenEncrypt::Key key(rng);
     TokenEncryptDecrypt encdec(key);
 
     for (size_t i = 0; i < ITER; ++i)
-        tryit(*rng, encdec);
+        tryit(rng, encdec);
 }

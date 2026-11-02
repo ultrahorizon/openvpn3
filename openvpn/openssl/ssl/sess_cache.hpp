@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -41,7 +31,7 @@ namespace openvpn {
 class OpenSSLSessionCache : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<OpenSSLSessionCache> Ptr;
+    using Ptr = RCPtr<OpenSSLSessionCache>;
 
     OPENVPN_EXCEPTION(openssl_sess_cache_error);
 
@@ -102,7 +92,7 @@ class OpenSSLSessionCache : public RC<thread_unsafe_refcount>
     class Key
     {
       public:
-        typedef std::unique_ptr<Key> UPtr;
+        using UPtr = std::unique_ptr<Key>;
 
         Key(const std::string &key_arg,
             OpenSSLSessionCache::Ptr cache_arg)
@@ -168,11 +158,8 @@ class OpenSSLSessionCache : public RC<thread_unsafe_refcount>
     }
 
   private:
-    struct SessionSet : public std::set<Session>
-    {
-    };
-
-    typedef std::map<std::string, SessionSet> Map;
+    using SessionSet = std::set<Session>;
+    using Map = std::map<std::string, SessionSet>;
 
     void remove_session(Map::iterator mi, SessionSet &ss, SessionSet::iterator ssi)
     {

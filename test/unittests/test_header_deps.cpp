@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 
 // this file allows checking headers for "out of tree" dependencies; manage.hpp
 // is an example
@@ -6,7 +6,7 @@
 
 using namespace openvpn;
 
-TEST(misc, header_deps)
+TEST(Misc, HeaderDeps)
 {
     // this is a compile test, no runtime value
     ASSERT_TRUE(true);

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // A preliminary parser for OpenVPN client configuration files.
 
@@ -104,7 +94,7 @@ class ParseClientConfig
                             message_ = "ERR_PROFILE_SERVER_LOCKED_UNSUPPORTED: server locked profiles are currently unsupported";
                             return;
                         }
-                        else if (arg1 == "ALLOW_PASSWORD_SAVE")
+                        if (arg1 == "ALLOW_PASSWORD_SAVE")
                             allowPasswordSave_ = parse_bool(o, "setenv ALLOW_PASSWORD_SAVE", 2);
                         else if (arg1 == "CLIENT_CERT")
                             clientCertEnabled_ = parse_bool(o, "setenv CLIENT_CERT", 2);
@@ -132,7 +122,7 @@ class ParseClientConfig
                         }
                         else if (arg1 == "PUSH_PEER_INFO")
                             pushPeerInfo_ = true;
-                        else if (string::starts_with(arg1, "UV_") && arg1.length() >= 4 && string::is_word(arg1))
+                        else if (arg1.starts_with("UV_") && arg1.length() >= 4 && string::is_word(arg1))
                         {
                             const std::string value = o.get_optional(2, 256);
                             if (string::is_printable(value))
@@ -157,7 +147,7 @@ class ParseClientConfig
             // userlocked username/password via <auth-user-pass>
             std::vector<std::string> user_pass;
             const bool auth_user_pass = parse_auth_user_pass(options, &user_pass);
-            if (auth_user_pass && user_pass.size() >= 1)
+            if (auth_user_pass && !user_pass.empty())
             {
                 userlockedUsername_ = user_pass[0];
                 if (user_pass.size() >= 2)
@@ -224,6 +214,12 @@ class ParseClientConfig
                 }
             }
 
+            {
+                const Option *o = options.get_ptr("ca");
+                if (o)
+                    vpnCa_ = o->get(1, Option::MULTILINE);
+            }
+
             // profile name
             {
                 const Option *o = options.get_ptr("PROFILE");
@@ -284,7 +280,7 @@ class ParseClientConfig
                 if (options.exists("push-peer-info"))
                     pushPeerInfo_ = true;
                 if (pushPeerInfo_)
-                    peerInfoUV_ = peer_info_uv;
+                    peerInfoUV_ = std::move(peer_info_uv);
             }
 
             // dev name
@@ -298,10 +294,10 @@ class ParseClientConfig
 
             // protocol configuration
             {
-                protoConfig.reset(new ProtoContext::Config());
+                protoConfig.reset(new ProtoContext::ProtoConfig());
                 protoConfig->tls_auth_factory.reset(new CryptoOvpnHMACFactory<SSLLib::CryptoAPI>());
                 protoConfig->tls_crypt_factory.reset(new CryptoTLSCryptFactory<SSLLib::CryptoAPI>());
-                protoConfig->load(options, ProtoContextOptions(), -1, false);
+                protoConfig->load(options, ProtoContextCompressionOptions(), -1, false);
             }
 
             unsigned int lflags = SSLConfigAPI::LF_PARSE_MODE;
@@ -310,6 +306,7 @@ class ParseClientConfig
             try
             {
                 sslConfig.reset(new SSLLib::SSLAPI::Config());
+                sslConfig->set_rng(new SSLLib::RandomAPI());
                 sslConfig->load(options, lflags);
             }
             catch (...)
@@ -320,7 +317,7 @@ class ParseClientConfig
         catch (const option_error &e)
         {
             error_ = true;
-            message_ = Unicode::utf8_printable<std::string>(std::string("ERR_PROFILE_OPTION: ") + e.what(), 256);
+            message_ = Unicode::utf8_printable<std::string>(e.what(), 256);
         }
         catch (const std::exception &e)
         {
@@ -366,8 +363,12 @@ class ParseClientConfig
             // add in missing options
             bool added = false;
 
-            // client
-            if (options.exists("tls-client") && options.exists("pull"))
+            /* client
+               Ensure that we always look at both options, so they register as touched */
+            const bool tls_client_exists = options.exists("tls-client");
+            const bool pull_exists = options.exists("pull");
+
+            if (tls_client_exists && pull_exists)
             {
                 Option opt;
                 opt.push_back("client");
@@ -456,6 +457,11 @@ class ParseClientConfig
         return externalPki_;
     }
 
+    std::string vpnCa() const
+    {
+        return vpnCa_;
+    }
+
     // static challenge, may be empty, ignored if autologin
     const std::string &staticChallenge() const
     {
@@ -527,9 +533,9 @@ class ParseClientConfig
     {
         std::ostringstream os;
 
-        os << "client" << std::endl;
-        os << "dev " << dev << std::endl;
-        os << "dev-type " << protoConfig->layer.dev_type() << std::endl;
+        os << "client\n";
+        os << "dev " << dev << '\n';
+        os << "dev-type " << protoConfig->layer.dev_type() << '\n';
         for (size_t i = 0; i < remoteList->size(); i++)
         {
             const RemoteList::Item::Ptr item = remoteList->get_item(i);
@@ -538,20 +544,18 @@ class ParseClientConfig
             const char *proto = item->transport_protocol.protocol_to_string();
             if (proto)
                 os << " " << proto;
-            os << std::endl;
+            os << '\n';
         }
         if (protoConfig->tls_crypt_context)
         {
-            os << "<tls-crypt>" << std::endl
-               << protoConfig->tls_key.render() << "</tls-crypt>"
-               << std::endl;
+            os << "<tls-crypt>\n"
+               << protoConfig->tls_crypt_key.render() << "</tls-crypt>\n";
         }
         else if (protoConfig->tls_auth_context)
         {
-            os << "<tls-auth>" << std::endl
-               << protoConfig->tls_key.render() << "</tls-auth>"
-               << std::endl;
-            os << "key_direction " << protoConfig->key_direction << std::endl;
+            os << "<tls-auth>\n"
+               << protoConfig->tls_auth_key.render() << "</tls-auth>\n";
+            os << "key_direction " << protoConfig->key_direction << '\n';
         }
 
         // SSL parameters
@@ -563,28 +567,28 @@ class ParseClientConfig
             print_pem(os, "cert", sslConfig->extract_cert());
 
             std::vector<std::string> extra_certs = sslConfig->extract_extra_certs();
-            if (extra_certs.size() > 0)
+            if (!extra_certs.empty())
             {
-                os << "<extra-certs>" << std::endl;
+                os << "<extra-certs>\n";
                 for (auto &cert : extra_certs)
                 {
                     os << cert;
                 }
-                os << "</extra-certs>" << std::endl;
+                os << "</extra-certs>\n";
             }
         }
 
         os << "cipher " << CryptoAlgs::name(protoConfig->dc.cipher(), "none")
-           << std::endl;
+           << '\n';
         os << "auth " << CryptoAlgs::name(protoConfig->dc.digest(), "none")
-           << std::endl;
+           << '\n';
         const char *comp = protoConfig->comp_ctx.method_to_string();
         if (comp)
-            os << "compress " << comp << std::endl;
+            os << "compress " << comp << '\n';
         os << "keepalive " << protoConfig->keepalive_ping.to_seconds() << " "
-           << protoConfig->keepalive_timeout.to_seconds() << std::endl;
-        os << "tun-mtu " << protoConfig->tun_mtu << std::endl;
-        os << "reneg-sec " << protoConfig->renegotiate.to_seconds() << std::endl;
+           << protoConfig->keepalive_timeout.to_seconds() << '\n';
+        os << "tun-mtu " << protoConfig->tun_mtu << '\n';
+        os << "reneg-sec " << protoConfig->renegotiate.to_seconds() << '\n';
 
         return os.str();
     }
@@ -678,8 +682,8 @@ class ParseClientConfig
     {
         if (pem.empty())
             return;
-        os << "<" << label << ">" << std::endl
-           << pem << "</" << label << ">" << std::endl;
+        os << "<" << label << ">\n"
+           << pem << "</" << label << ">\n";
     }
 
 #ifdef HAVE_CONFIG_JSONCPP
@@ -717,28 +721,24 @@ class ParseClientConfig
     {
         if (auth_user_pass && user_pass.size() >= 2) // embedded password?
             return true;
-        else
+
+        const Option *autologin = options.get_ptr("AUTOLOGIN");
+        if (autologin)
+            return string::is_true(autologin->get_optional(1, 16));
+
+        bool ret = !auth_user_pass;
+        if (ret)
         {
-            const Option *autologin = options.get_ptr("AUTOLOGIN");
-            if (autologin)
-                return string::is_true(autologin->get_optional(1, 16));
-            else
-            {
-                bool ret = !auth_user_pass;
-                if (ret)
-                {
-                    // External PKI profiles from AS don't declare auth-user-pass,
-                    // and we have no way of knowing if they are autologin unless
-                    // we examine their cert, which requires accessing the system-level
-                    // cert store on the client.  For now, we are going to assume
-                    // that External PKI profiles from the AS are always userlogin,
-                    // unless explicitly overriden by AUTOLOGIN above.
-                    if (options.exists("EXTERNAL_PKI"))
-                        return false;
-                }
-                return ret;
-            }
+            // External PKI profiles from AS don't declare auth-user-pass,
+            // and we have no way of knowing if they are autologin unless
+            // we examine their cert, which requires accessing the system-level
+            // cert store on the client.  For now, we are going to assume
+            // that External PKI profiles from the AS are always userlogin,
+            // unless explicitly overriden by AUTOLOGIN above.
+            if (options.exists("EXTERNAL_PKI"))
+                return false;
         }
+        return ret;
     }
 
     static bool is_external_pki(const OptionList &options)
@@ -746,12 +746,10 @@ class ParseClientConfig
         const Option *epki = options.get_ptr("EXTERNAL_PKI");
         if (epki)
             return string::is_true(epki->get_optional(1, 16));
-        else
-        {
-            const Option *cert = options.get_ptr("cert");
-            const Option *key = options.get_ptr("key");
-            return !cert || !key;
-        }
+
+        const Option *cert = options.get_ptr("cert");
+        const Option *key = options.get_ptr("key");
+        return !cert || !key;
     }
 
     void reset_pod()
@@ -767,10 +765,9 @@ class ParseClientConfig
         const std::string parm = o.get(index, 16);
         if (parm == "0")
             return false;
-        else if (parm == "1")
+        if (parm == "1")
             return true;
-        else
-            throw option_error(title + ": parameter must be 0 or 1");
+        throw option_error(ERR_INVALID_OPTION_VAL, title + ": parameter must be 0 or 1");
     }
 
     bool error_;
@@ -781,6 +778,7 @@ class ParseClientConfig
     bool autologin_;
     bool clientCertEnabled_;
     bool externalPki_;
+    std::string vpnCa_;
     bool pushPeerInfo_;
     std::string staticChallenge_;
     bool staticChallengeEcho_;
@@ -792,7 +790,7 @@ class ParseClientConfig
     RemoteList::Ptr remoteList;
     RemoteItem firstRemoteListItem_;
     PeerInfo::Set::Ptr peerInfoUV_;
-    ProtoContext::Config::Ptr protoConfig;
+    ProtoContext::ProtoConfig::Ptr protoConfig;
     SSLLib::SSLAPI::Config::Ptr sslConfig;
     std::string dev;
     std::string windowsDriver_;

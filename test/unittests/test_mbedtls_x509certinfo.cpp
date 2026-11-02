@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 //
 //
 //    Basic unit test for the openvpn/openssl/pki/x509certinfo.hpp functions
@@ -25,7 +15,7 @@
 
 #include <string>
 
-#include "test_common.h"
+#include "test_common.hpp"
 #include "openvpn/mbedtls/pki/x509cert.hpp"
 #include "openvpn/mbedtls/pki/x509certinfo.hpp"
 
@@ -67,7 +57,7 @@ std::string test_cert = "-----BEGIN CERTIFICATE-----\n"
                         "fYFKjF0w1F5ftfpCbucSMbqt\n"
                         "-----END CERTIFICATE-----\n";
 
-TEST(mbedTLS_x509_get_subject, old_format)
+TEST(MbedTLSX509GetSubject, OldFormat)
 {
     MbedTLSPKI::X509Cert x509crt(test_cert, "Embedded Test Server Cert", true);
     std::string expect(
@@ -78,7 +68,7 @@ TEST(mbedTLS_x509_get_subject, old_format)
     ASSERT_EQ(MbedTLSPKI::x509_get_subject(x509crt.get(), false), expect);
 }
 
-TEST(mbesTLS_x509_get_subject, new_format)
+TEST(MbesTLSX509GetSubject, NewFormat)
 {
     MbedTLSPKI::X509Cert x509crt(test_cert, "Embedded Test Server Cert", true);
     std::string expect(
@@ -88,7 +78,7 @@ TEST(mbesTLS_x509_get_subject, new_format)
     ASSERT_EQ(MbedTLSPKI::x509_get_subject(x509crt.get(), true), expect);
 }
 
-TEST(mbedTLS_x509_get_common_name, basic_check)
+TEST(MbedTLSX509GetCommonName, BasicCheck)
 {
     MbedTLSPKI::X509Cert x509crt(test_cert, "Embedded Test Server Cert", true);
 

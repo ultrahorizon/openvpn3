@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2019-2022 OpenVPN Inc.
+//    Copyright (C) 2019- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 
 // We have two set of measurements for these tests
@@ -39,7 +29,7 @@
 
 // #define DEBUG  // Define this macro to get more details
 
-#include "test_common.h"
+#include "test_common.hpp"
 #include <cstdint>
 #include <unistd.h>
 #include <memory>
@@ -48,17 +38,17 @@
 #include <algorithm>
 
 #ifdef DEBUG
-#define DEBUG_DUMP(msg, st, en, rt, chst, chen, chrt, md)              \
-    std::cout << msg << std::endl                                      \
-              << "start = " << std::to_string(st) << std::endl         \
-              << "end = " << std::to_string(en) << std::endl           \
-              << "runtime = " << std::to_string(rt) << std::endl       \
-              << "chk_start = " << std::to_string(chst) << std::endl   \
-              << "chk_end = " << std::to_string(chen) << std::endl     \
-              << "chk_runtime = " << std::to_string(chrt) << std::endl \
-              << "measurement difference = "                           \
-              << std::to_string(md) << std::endl                       \
-              << "--------------------------------------" << std::endl
+#define DEBUG_DUMP(msg, st, en, rt, chst, chen, chrt, md)         \
+    std::cout << msg << "\n"                                      \
+              << "start = " << std::to_string(st) << "\n"         \
+              << "end = " << std::to_string(en) << "\n"           \
+              << "runtime = " << std::to_string(rt) << "\n"       \
+              << "chk_start = " << std::to_string(chst) << "\n"   \
+              << "chk_end = " << std::to_string(chen) << "\n"     \
+              << "chk_runtime = " << std::to_string(chrt) << "\n" \
+              << "measurement difference = "                      \
+              << std::to_string(md) << "\n"                       \
+              << "--------------------------------------\n"
 
 #else
 #define DEBUG_DUMP(msg, st, en, rt, chst, chen, chrt, md) \
@@ -69,7 +59,7 @@
 #define MEASURE(v, chkv, thread)          \
     double v = openvpn::cpu_time(thread); \
     ASSERT_GE(v, 0);                      \
-    double chkv = time(NULL)
+    double chkv = static_cast<double>(time(NULL))
 
 #define CALCULATE(msg, st, en, rt, chst, chen, chrt, md) \
     double rt = en - st;                                 \
@@ -78,7 +68,7 @@
     DEBUG_DUMP(msg, st, en, rt, chst, chen, chrt, md)
 
 
-typedef std::shared_ptr<std::thread> ThreadPtr;
+using ThreadPtr = std::shared_ptr<std::thread>;
 
 
 // For simplicty, keep the total thread runtime
@@ -89,7 +79,7 @@ double thread_runtime = 0;
 
 void update_thread_runtime(double val)
 {
-    std::lock_guard<std::mutex> ug(update_guard);
+    const std::lock_guard<std::mutex> ug(update_guard);
     thread_runtime += val;
 }
 
@@ -111,13 +101,13 @@ static void workload(const uint16_t multiplier)
     double d = 0;
     for (unsigned int i = UINT16_MAX * multiplier; i > 0; i--)
     {
-        d += gen();
+        d += static_cast<double>(gen());
     }
     (void)d;
 }
 
 
-TEST(CPUTime, cpu_time_pid)
+TEST(CPUTime, CpuTimePid)
 {
     // Measure the runtime of the workload
     MEASURE(start, chk_start, false);
@@ -180,7 +170,7 @@ void run_threads(const uint8_t num_threads)
         ThreadPtr tp;
         tp = std::make_shared<std::thread>([id = i]()
                                            { worker_thread(id); });
-        threads.push_back(tp);
+        threads.push_back(std::move(tp));
     }
 
     for (const auto &t : threads)
@@ -190,7 +180,7 @@ void run_threads(const uint8_t num_threads)
 }
 
 
-TEST(CPUTime, cpu_time_thread_1)
+TEST(CPUTime, CpuTimeThread1)
 {
     // Meassure running a single worker thread
     MEASURE(parent_start, chk_parent_start, false);
@@ -210,14 +200,14 @@ TEST(CPUTime, cpu_time_thread_1)
 }
 
 
-TEST(CPUTime, cpu_time_thread_numcores)
+TEST(CPUTime, CpuTimeThreadNumcores)
 {
     // Use number of available cores
-    auto num_cores = std::min(std::thread::hardware_concurrency(), 1u);
+    auto num_cores = std::min(std::thread::hardware_concurrency(), 1U);
 
     // Meassure running a single worker thread
     MEASURE(parent_start, chk_parent_start, false);
-    run_threads(num_cores);
+    run_threads(static_cast<uint8_t>(num_cores));
     MEASURE(parent_end, chk_parent_end, false);
 
     CALCULATE("Parent thread - " << std::to_string(num_cores) << " child thread",
@@ -229,7 +219,7 @@ TEST(CPUTime, cpu_time_thread_numcores)
               chk_runtime,
               parent_diff);
 #ifdef DEBUG
-    std::cout << "Total thread runtime: " << std::to_string(thread_runtime) << std::endl;
+    std::cout << "Total thread runtime: " << std::to_string(thread_runtime) << "\n";
 #endif
 
     // The main process (this PID) will have a total runtime

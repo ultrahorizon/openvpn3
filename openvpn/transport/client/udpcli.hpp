@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // UDP transport object specialized for client.
 
@@ -36,13 +26,12 @@
 #include <openvpn/transport/socket_protect.hpp>
 #include <openvpn/client/remotelist.hpp>
 
-namespace openvpn {
-namespace UDPTransport {
+namespace openvpn::UDPTransport {
 
 class ClientConfig : public TransportClientFactory
 {
   public:
-    typedef RCPtr<ClientConfig> Ptr;
+    using Ptr = RCPtr<ClientConfig>;
 
     RemoteList::Ptr remote_list;
     bool server_addr_float;
@@ -82,12 +71,12 @@ class ClientConfig : public TransportClientFactory
 
 class Client : public TransportClient, AsyncResolvableUDP
 {
-    typedef RCPtr<Client> Ptr;
+    using Ptr = RCPtr<Client>;
 
-    friend class ClientConfig;   // calls constructor
-    friend class Link<Client *>; // calls udp_read_handler
+    friend class ClientConfig;      // calls constructor
+    friend class UDPLink<Client *>; // calls udp_read_handler
 
-    typedef Link<Client *> LinkImpl;
+    using LinkImpl = UDPLink<Client *>;
 
   public:
     void transport_start() override
@@ -141,7 +130,7 @@ class Client : public TransportClient, AsyncResolvableUDP
     {
     }
 
-    unsigned int transport_send_queue_size() override
+    size_t transport_send_queue_size() override
     {
         return 0;
     }
@@ -171,7 +160,7 @@ class Client : public TransportClient, AsyncResolvableUDP
         return server_endpoint.port();
     }
 
-    int native_handle() override
+    openvpn_io::detail::socket_type native_handle() override
     {
         return socket.native_handle();
     }
@@ -195,6 +184,9 @@ class Client : public TransportClient, AsyncResolvableUDP
            ClientConfig *config_arg,
            TransportClientParent *parent_arg)
         : AsyncResolvableUDP(io_context_arg),
+#ifdef OPENVPN_GREMLIN
+          io_context(io_context_arg),
+#endif
           socket(io_context_arg),
           config(config_arg),
           parent(parent_arg),
@@ -224,13 +216,18 @@ class Client : public TransportClient, AsyncResolvableUDP
                     parent->transport_error(Error::TRANSPORT_ERROR, "EADDRNOTAVAIL: Can't assign requested address");
                 }
 #endif
+#ifdef OPENVPN_PLATFORM_WIN
+                if (err == WSAEINVAL)
+                {
+                    stop();
+                    parent->transport_error(Error::TRANSPORT_ERROR, "WSAEINVAL: An invalid argument was supplied.");
+                }
+#endif
                 return false;
             }
-            else
-                return true;
+            return true;
         }
-        else
-            return false;
+        return false;
     }
 
     void udp_read_handler(PacketFrom::SPtr &pfp) // called by LinkImpl
@@ -314,7 +311,7 @@ class Client : public TransportClient, AsyncResolvableUDP
                                         (*config->frame)[Frame::READ_LINK_UDP],
                                         config->stats));
 #ifdef OPENVPN_GREMLIN
-                impl->gremlin_config(config->gremlin_config);
+                impl->gremlin_config(io_context, config->gremlin_config);
 #endif
                 impl->start(config->n_parallel);
                 parent->transport_connecting();
@@ -335,6 +332,9 @@ class Client : public TransportClient, AsyncResolvableUDP
 
     Protocol server_protocol;
 
+#ifdef OPENVPN_GREMLIN
+    openvpn_io::io_context &io_context;
+#endif
     openvpn_io::ip::udp::socket socket;
     ClientConfig::Ptr config;
     TransportClientParent *parent;
@@ -349,7 +349,6 @@ inline TransportClient::Ptr ClientConfig::new_transport_client_obj(openvpn_io::i
 {
     return TransportClient::Ptr(new Client(io_context, this, parent));
 }
-} // namespace UDPTransport
-} // namespace openvpn
+} // namespace openvpn::UDPTransport
 
 #endif

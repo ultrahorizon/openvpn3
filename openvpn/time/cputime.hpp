@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -34,7 +24,7 @@
 #include <openvpn/common/number.hpp>
 #include <openvpn/common/exception.hpp>
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
 #include <mach/mach.h>
 
 /**
@@ -87,12 +77,10 @@ inline double cpu_time(const bool thread = false)
 {
     try
     {
-        struct rusage usage
-        {
-        };
+        struct rusage usage{};
 
         int ret = 0;
-#if defined(__APPLE__)
+#ifdef __APPLE__
         if (thread)
             ret = getrusage_thread(usage);
         else
@@ -104,8 +92,8 @@ inline double cpu_time(const bool thread = false)
         {
             throw Exception("getrusage() call failed: " + std::string(strerror(errno)));
         }
-        double utime = usage.ru_utime.tv_sec + ((double)usage.ru_utime.tv_usec / 1000000);
-        double stime = usage.ru_stime.tv_sec + ((double)usage.ru_stime.tv_usec / 1000000);
+        const double utime = static_cast<double>(usage.ru_utime.tv_sec) + (static_cast<double>(usage.ru_utime.tv_usec / 1000000));
+        const double stime = static_cast<double>(usage.ru_stime.tv_sec) + (static_cast<double>(usage.ru_stime.tv_usec / 1000000));
 
         return utime + stime;
     }

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Parse the remote-cert-tls, remote-cert-ku, and remote-cert-eku options.
 
@@ -32,8 +22,7 @@
 #include <openvpn/common/hexstr.hpp>
 #include <openvpn/common/options.hpp>
 
-namespace openvpn {
-namespace KUParse {
+namespace openvpn::KUParse {
 enum TLSWebType
 {
     TLS_WEB_NONE,
@@ -70,10 +59,9 @@ inline TLSWebType remote_cert_type(const std::string &ct)
 {
     if (ct == "server")
         return TLS_WEB_SERVER;
-    else if (ct == "client")
+    if (ct == "client")
         return TLS_WEB_CLIENT;
-    else
-        throw option_error("remote-cert-tls must be 'client' or 'server'");
+    throw option_error(ERR_INVALID_OPTION_CRYPTO, "remote-cert-tls must be 'client' or 'server'");
 }
 
 inline void remote_cert_tls(const std::string &ct,
@@ -108,20 +96,18 @@ inline void remote_cert_ku(const OptionList &opt,
     if (o)
     {
         if (o->empty())
-            throw option_error("remote-cert-ku: no hex values specified");
-        else if (o->size() >= 64)
-            throw option_error("remote-cert-ku: too many parameters");
-        else
+            throw option_error(ERR_INVALID_OPTION_CRYPTO, "remote-cert-ku: no hex values specified");
+        if (o->size() >= 64)
+            throw option_error(ERR_INVALID_OPTION_CRYPTO, "remote-cert-ku: too many parameters");
+
+        try
         {
-            try
-            {
-                for (size_t i = 1; i < o->size(); ++i)
-                    ku.push_back(parse_hex_number<unsigned int>(o->get(i, 16)));
-            }
-            catch (parse_hex_error &)
-            {
-                throw option_error("remote-cert-ku: error parsing hex value list");
-            }
+            for (size_t i = 1; i < o->size(); ++i)
+                ku.push_back(parse_hex_number<unsigned int>(o->get(i, 16)));
+        }
+        catch (parse_hex_error &)
+        {
+            throw option_error(ERR_INVALID_OPTION_CRYPTO, "remote-cert-ku: error parsing hex value list");
         }
     }
 }
@@ -136,7 +122,6 @@ inline void remote_cert_eku(const OptionList &opt,
     if (o)
         eku = o->get(1, 256);
 }
-} // namespace KUParse
-} // namespace openvpn
+} // namespace openvpn::KUParse
 
 #endif

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_COMMON_HOSTLIST_H
 #define OPENVPN_COMMON_HOSTLIST_H
@@ -32,14 +22,11 @@
 #include <openvpn/common/hostport.hpp>
 #include <openvpn/random/randapi.hpp>
 
-namespace openvpn {
-namespace HostList {
+namespace openvpn::HostList {
 
 struct Host
 {
-    Host()
-    {
-    }
+    Host() = default;
 
     Host(const std::string &host_arg, const std::string &port_arg)
         : host(host_arg),
@@ -81,9 +68,7 @@ struct Host
 class List : public std::vector<Host>
 {
   public:
-    List()
-    {
-    }
+    List() = default;
 
     List(const OptionList &opt,
          const std::string &directive,
@@ -157,7 +142,6 @@ class Iterator
   private:
     int index;
 };
-} // namespace HostList
-} // namespace openvpn
+} // namespace openvpn::HostList
 
 #endif

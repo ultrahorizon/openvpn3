@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_TRANSPORT_PROTOCOL_H
 #define OPENVPN_TRANSPORT_PROTOCOL_H
@@ -176,7 +166,7 @@ class Protocol
         {
             if (!title)
                 title = "protocol";
-            OPENVPN_THROW(option_error, "error parsing " << title << ": " << str);
+            OPENVPN_THROW_ARG1(option_error, ERR_INVALID_OPTION_VAL, "error parsing " << title << ": " << str);
         }
         return ret;
     }
@@ -324,15 +314,15 @@ class Protocol
         case NO_SUFFIX:
             break;
         case CLIENT_SUFFIX:
-            if (string::ends_with(s, "-client"))
+            if (s.ends_with("-client"))
                 s = s.substr(0, s.length() - 7);
             break;
         case SERVER_SUFFIX:
-            if (string::ends_with(s, "-server"))
+            if (s.ends_with("-server"))
                 s = s.substr(0, s.length() - 7);
             break;
         }
-        if (string::starts_with(s, "unix")) // unix domain socket
+        if (s.starts_with("unix")) // unix domain socket
         {
             if (s == "unix-stream")
                 ret = UnixStream;
@@ -345,7 +335,7 @@ class Protocol
         {
             const std::string s1 = s.substr(0, 3);
             const std::string s2 = s.substr(3);
-            if (s2 == "")
+            if (s2.empty())
             {
                 if (s1 == "udp")
                     ret = UDP;

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // These classes handle parsing and representation of OpenVPN "remote" directives,
 // and the list of IP addresses that they resolve to.
@@ -64,7 +54,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
     // associated with a "remote" item.
     struct ResolvedAddr : public RC<thread_unsafe_refcount>
     {
-        typedef RCPtr<ResolvedAddr> Ptr;
+        using Ptr = RCPtr<ResolvedAddr>;
         IP::Addr addr;
 
         std::string to_string() const
@@ -76,7 +66,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
     // The IP address list associated with a single "remote" item.
     struct ResolvedAddrList : public std::vector<ResolvedAddr::Ptr>, public RC<thread_unsafe_refcount>
     {
-        typedef RCPtr<ResolvedAddrList> Ptr;
+        using Ptr = RCPtr<ResolvedAddrList>;
 
         std::string to_string() const
         {
@@ -103,14 +93,16 @@ class RemoteList : public RC<thread_unsafe_refcount>
 
     struct ConnBlock : public RC<thread_unsafe_refcount>
     {
-        typedef RCPtr<ConnBlock> Ptr;
+        using Ptr = RCPtr<ConnBlock>;
 
         virtual void new_item(const Item &item) = 0;
     };
 
     struct ConnBlockFactory
     {
-        typedef RCPtr<ConnBlockFactory> Ptr;
+        using Ptr = RCPtr<ConnBlockFactory>;
+
+        virtual ~ConnBlockFactory() = default;
 
         virtual ConnBlock::Ptr new_conn_block(const OptionList::Ptr &opt) = 0;
     };
@@ -118,7 +110,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
     // A single "remote" item
     struct Item : public RC<thread_unsafe_refcount>
     {
-        typedef RCPtr<Item> Ptr;
+        using Ptr = RCPtr<Item>;
 
         // "remote" item parameters from config file
         std::string server_host;
@@ -139,7 +131,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
 
         bool res_addr_list_defined() const
         {
-            return res_addr_list && res_addr_list->size() > 0;
+            return res_addr_list && !res_addr_list->empty();
         }
 
         std::string actual_host() const
@@ -202,12 +194,11 @@ class RemoteList : public RC<thread_unsafe_refcount>
             if (res_addr_list && index < res_addr_list->size())
             {
                 endpoint.address((*res_addr_list)[index]->addr.to_asio());
-                endpoint.port(parse_number_throw<unsigned int>(server_port, "remote_port"));
+                endpoint.port(parse_number_throw<unsigned short>(server_port, "remote_port"));
                 OPENVPN_LOG_REMOTELIST("*** RemoteList::Item endpoint GET[" << index << "] " << endpoint << ' ' << to_string());
                 return true;
             }
-            else
-                return false;
+            return false;
         }
 
         bool need_resolve()
@@ -229,6 +220,8 @@ class RemoteList : public RC<thread_unsafe_refcount>
 
     struct RemoteOverride
     {
+        virtual ~RemoteOverride() = default;
+
         virtual Item::Ptr get() = 0;
     };
 
@@ -237,7 +230,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
     struct Directives
     {
         explicit Directives(const std::string &conn_tag = "")
-            : connection(conn_tag.length() ? conn_tag : "connection")
+            : connection(!conn_tag.empty() ? conn_tag : "connection")
         {
         }
 
@@ -282,8 +275,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
                     item_ = 0;
                 return true;
             }
-            else
-                return false;
+            return false;
         }
 
       private:
@@ -297,7 +289,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
     // (option_error used during initial options processing).
     OPENVPN_EXCEPTION(remote_list_error);
 
-    typedef RCPtr<RemoteList> Ptr;
+    using Ptr = RCPtr<RemoteList>;
 
     // Helper class used to resolve all items in remote list.
     // This is useful in tun_persist mode, where it may be necessary
@@ -307,10 +299,12 @@ class RemoteList : public RC<thread_unsafe_refcount>
     class BulkResolve : public virtual RC<thread_unsafe_refcount>, protected AsyncResolvableTCP
     {
       public:
-        typedef RCPtr<BulkResolve> Ptr;
+        using Ptr = RCPtr<BulkResolve>;
 
         struct NotifyCallback
         {
+            virtual ~NotifyCallback() = default;
+
             // client callback when resolve operation is complete
             virtual void bulk_resolve_done() = 0;
         };
@@ -535,7 +529,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
         }
 
         if (!(flags & ALLOW_EMPTY) && list.empty())
-            throw option_error("remote option not specified");
+            throw option_error(ERR_INVALID_CONFIG, "remote option not specified");
     }
 
     void process_push(const OptionList &opt)
@@ -619,7 +613,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
             if (contains_protocol(tcp))
                 set_proto_override(tcp);
             else
-                throw option_error("cannot connect via TCP-based proxy because no TCP server entries exist in profile");
+                throw option_error(ERR_INVALID_CONFIG, "cannot connect via TCP-based proxy because no TCP server entries exist in profile");
         }
         else if (proto_override.defined() && contains_protocol(proto_override))
             set_proto_override(proto_override);
@@ -689,7 +683,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
     // return true if object has at least one connection entry
     bool defined() const
     {
-        return list.size() > 0;
+        return !list.empty();
     }
 
     // return remote list size
@@ -730,7 +724,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
         for (size_t i = 0; i < list.size(); ++i)
         {
             const Item &e = *list[i];
-            out << '[' << i << "] " << e.to_string() << std::endl;
+            out << '[' << i << "] " << e.to_string() << '\n';
         }
         return out.str();
     }
@@ -809,8 +803,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
         const size_t pri = index.item();
         if (pri < list.size())
             return pri;
-        else
-            throw remote_list_error("current remote server item is undefined");
+        throw remote_list_error("current remote server item is undefined");
     }
 
     // return the number of cached IP addresses associated with a given item
@@ -970,7 +963,7 @@ class RemoteList : public RC<thread_unsafe_refcount>
             // Throws if server_host is not an IP address
             IP::Addr(item.server_host);
         }
-        catch (const IP::ip_exception &e)
+        catch (const IP::ip_exception &)
         {
             // Produce 6 bytes of random prefix data
             unsigned char prefix[6];

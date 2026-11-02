@@ -4,25 +4,15 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // General-purpose classes for instantiating a posix process with arguments.
 
-#ifndef OPENVPN_COMMON_PROCESS_H
-#define OPENVPN_COMMON_PROCESS_H
+#pragma once
+#ifndef _WIN32
 
 #include <stdlib.h>    // exit
 #include <unistd.h>    // fork, execve
@@ -56,7 +46,7 @@ inline pid_t system_cmd_async(const std::string &cmd,
     auto av = argv_wrap.c_argv();
     auto ev = env_wrap ? env_wrap->c_argv() : ::environ;
 
-#if defined(__APPLE__)
+#ifdef __APPLE__
     /* macOS vfork is deprecated and behaves identical to fork() */
     const pid_t pid = ::fork();
 #else
@@ -119,7 +109,7 @@ inline int system_cmd(const std::string &cmd, const Argv &argv)
 inline int system_cmd(const Argv &argv)
 {
     int ret = -1;
-    if (argv.size())
+    if (!argv.empty())
         ret = system_cmd(argv[0], argv);
     return ret;
 }
@@ -134,7 +124,7 @@ inline int system_cmd(const std::string &cmd,
                       unsigned int redirect_pipe_flags,
                       const sigset_t *sigmask)
 {
-    SignalBlockerPipe sbpipe;
+    const SignalBlockerPipe sbpipe;
     RedirectPipe remote;
     if (!inout.in.empty())
         redirect_pipe_flags |= RedirectPipe::ENABLE_IN;
@@ -148,11 +138,9 @@ inline int system_cmd(const std::string &cmd,
 
 struct Command : public Action
 {
-    typedef RCPtr<Command> Ptr;
+    using Ptr = RCPtr<Command>;
 
-    Command()
-    {
-    }
+    Command() = default;
 
     Command(Argv argv_arg)
         : argv(std::move(argv_arg))
@@ -163,31 +151,36 @@ struct Command : public Action
     {
         Command *ret = new Command;
         ret->argv = argv;
+        ret->mark = mark;
         return ret;
     }
 
-    virtual void execute(std::ostream &os) override
+    void execute(std::ostream &os) override
     {
         if (!argv.empty())
         {
-            os << to_string() << std::endl;
+            os << to_string() << '\n';
 #ifdef OPENVPN_PROCESS_AVOID_PIPES
             const int status = system_cmd(argv[0], argv);
             if (status < 0)
-                os << "Error: command failed to execute" << std::endl;
+                os << "Error: command failed to execute\n";
 #else
             RedirectPipe::InOut inout;
             const int status = system_cmd(argv[0], argv, nullptr, inout, RedirectPipe::COMBINE_OUT_ERR, nullptr);
             if (status < 0)
-                os << "Error: command failed to execute" << std::endl;
+                os << "Error: command failed to execute\n";
             os << inout.out;
+
+            /* if route already exists, we got "File exists" in output */
+            if (inout.out.find("File exists") != std::string::npos)
+                throw Exception("Route already exists, new route will be ignored");
 #endif
         }
         else
-            os << "Error: command called with empty argv" << std::endl;
+            os << "Error: command called with empty argv\n";
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         return argv.to_string();
     }
@@ -197,4 +190,4 @@ struct Command : public Action
 
 } // namespace openvpn
 
-#endif // OPENVPN_COMMON_PROCESS_H
+#endif

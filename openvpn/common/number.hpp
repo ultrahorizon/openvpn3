@@ -4,26 +4,17 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // General purpose methods for dealing with numbers.
 
 #ifndef OPENVPN_COMMON_NUMBER_H
 #define OPENVPN_COMMON_NUMBER_H
 
+#include <algorithm>
 #include <string>
 #include <limits>
 
@@ -65,7 +56,7 @@ inline bool parse_number(const char *str,
         }
         else if (!c || nondigit_term)
         {
-            retval = neg ? -ret : ret;
+            retval = neg ? T(-ret) : ret;
             return true;
         }
         else
@@ -86,8 +77,7 @@ inline T parse_number_throw(const std::string &str, const std::string &error)
     T ret;
     if (parse_number<T>(str.c_str(), ret))
         return ret;
-    else
-        throw number_parse_exception(error);
+    throw number_parse_exception(error);
 }
 
 template <typename T>
@@ -96,8 +86,7 @@ inline T parse_number_throw(const std::string &str, const char *error)
     T ret;
     if (parse_number<T>(str.c_str(), ret))
         return ret;
-    else
-        throw number_parse_exception(std::string(error));
+    throw number_parse_exception(std::string(error));
 }
 
 template <typename T>
@@ -106,8 +95,7 @@ inline T parse_number_throw(const char *str, const char *error)
     T ret;
     if (parse_number<T>(str, ret))
         return ret;
-    else
-        throw number_parse_exception(std::string(error));
+    throw number_parse_exception(std::string(error));
 }
 
 template <typename T>
@@ -133,18 +121,10 @@ inline bool parse_number_validate(const std::string &numstr,
     return false;
 }
 
-inline bool is_number(const char *str)
+inline bool is_number(std::string_view str)
 {
-    char c;
-    bool found_digit = false;
-    while ((c = *str++))
-    {
-        if (c >= '0' && c <= '9')
-            found_digit = true;
-        else
-            return false;
-    }
-    return found_digit;
+    return !str.empty() && std::ranges::all_of(str, [](const unsigned char c)
+                                               { return std::isdigit(c); });
 }
 
 } // namespace openvpn

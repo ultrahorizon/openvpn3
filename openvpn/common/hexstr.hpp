@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // A collection of functions for rendering and parsing hexadecimal strings
 
@@ -27,9 +17,13 @@
 #include <string>
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
 
+#include <openvpn/common/clamp_typerange.hpp>
 #include <openvpn/common/exception.hpp>
 #include <openvpn/common/string.hpp>
+
+using namespace openvpn::numeric_util;
 
 namespace openvpn {
 
@@ -47,14 +41,14 @@ namespace openvpn {
  */
 inline char render_hex_char(const int c, const bool caps = false)
 {
-    if (c < 10)
-        return '0' + c;
-    else if (c < 16)
-        return (caps ? 'A' : 'a') - 10 + c;
-    else
+    if (c < 0)
         return '?';
+    if (c < 10)
+        return '0' + static_cast<char>(c);
+    if (c < 16)
+        return static_cast<char>((caps ? 'A' : 'a') - 10 + c);
+    return '?';
 }
-
 
 /**
  *  Parses a character in the range {0..9,A-F,a-f} to an
@@ -67,16 +61,15 @@ inline char render_hex_char(const int c, const bool caps = false)
  *          input character is invalid, outside of {0..9,A-F,a-f}, it will
  *          return -1.
  */
-inline int parse_hex_char(const char c)
+inline int parse_hex_char(const int c)
 {
     if (c >= '0' && c <= '9')
         return c - '0';
-    else if (c >= 'a' && c <= 'f')
+    if (c >= 'a' && c <= 'f')
         return c - 'a' + 10;
-    else if (c >= 'A' && c <= 'F')
+    if (c >= 'A' && c <= 'F')
         return c - 'A' + 10;
-    else
-        return -1;
+    return -1;
 }
 
 
@@ -110,7 +103,8 @@ class RenderHexByte
 
     /**
      *  Retrieve the hexadecimal representation of the value.
-     *  Warning: The result is a non-NULL terminated string.
+     *
+     *  @warning The result is a non-NULL terminated string.
      *
      *  @return Returns a non-NULL terminated 2 byte string with the hexadecimal
      *          representation of the initial value.  The return value is guaranteed
@@ -169,7 +163,7 @@ inline std::string render_hex(const void *data, const size_t size, const bool ca
 
 
 /**
- *  Variant of @render_hex(const unsiged char *,...) which adds a
+ *  Variant of \c render_hex(const unsiged char *,...) which adds a
  *  separator between each byte
  *
  *  @param data  Unsigned char pointer to buffer to render.
@@ -201,7 +195,7 @@ inline std::string render_hex_sep(const unsigned char *data, size_t size, const 
 }
 
 /**
- *  Variant of @render_hex(const void *,...) which adds a
+ *  Variant of \c render_hex(const void *,...) which adds a
  *  separator between each byte
 
  *  @param data  Void pointer to buffer to render.
@@ -271,7 +265,7 @@ inline std::string dump_hex(const unsigned char *data, size_t size)
         {
             if (i)
             {
-                os << "  " << chars << std::endl;
+                os << "  " << chars << '\n';
                 chars.clear();
             }
             os << std::setfill(' ') << std::setw(8) << i << ":";
@@ -284,7 +278,7 @@ inline std::string dump_hex(const unsigned char *data, size_t size)
             chars += '.';
     }
     if (i)
-        os << string::spaces(2 + (((i - 1) & mask) ^ mask) * 3) << chars << std::endl;
+        os << string::spaces(clamp_to_typerange<int>(2 + (((i - 1) & mask) ^ mask) * 3)) << chars << '\n';
     return os.str();
 }
 
@@ -309,7 +303,7 @@ inline std::string dump_hex(void *data, size_t size)
  *  with the typical 16 bytes split between hexadecimal and character
  *  separation per line.
  *
- *  @param  data  std::string containing the buffer to render
+ *  @param  str  std::string containing the buffer to render
  *
  *  @return Returns a string containing a preformatted output of the
  *          hexadecimal dump.
@@ -349,13 +343,13 @@ OPENVPN_SIMPLE_EXCEPTION(parse_hex_error);
  *  @param dest  std::vector<T> destination buffer to use.
  *  @param str   std::string& containing the hexadecimal string to parse.
  *
- *  @return Returns nothing on success.  Will throw a parse_hex_error
- *          exception if the input is invalid/not parseable as a hexadecimal
- *          number.
+ *  @throws parse_hex_error will throw this exception if the input is
+ *                          invalid/not parsable as a hexadecimal number.
  */
 template <typename V>
 inline void parse_hex(V &dest, const std::string &str)
 {
+    using vvalue_t = typename V::value_type;
     const int len = int(str.length());
     int i;
     for (i = 0; i <= len - 2; i += 2)
@@ -364,7 +358,7 @@ inline void parse_hex(V &dest, const std::string &str)
         const int low = parse_hex_char(str[i + 1]);
         if (high == -1 || low == -1)
             throw parse_hex_error();
-        dest.push_back((high << 4) + low);
+        dest.push_back(static_cast<vvalue_t>((high << 4) + low));
     }
     if (i != len)
         throw parse_hex_error(); // straggler char
@@ -376,7 +370,7 @@ inline void parse_hex(V &dest, const std::string &str)
  *  string into a templated (T) variable.  The input buffer
  *  MUST be NULL terminated.
  *
- *  WARNING: There are _NO_ overflow checks.
+ *  @warning There are _NO_ overflow checks.
  *
  *  @param str    Char pointer (char *) to the buffer to be parsed.
  *  @param retval Return buffer where the parsed value is stored.
@@ -411,7 +405,7 @@ inline bool parse_hex_number(const char *str, T &retval)
 
 
 /**
- *  Variant of @parse_hex_number(const char *, ...) which takes a std::string
+ *  Variant of \c parse_hex_number(const char *, ...) which takes a std::string
  *  as the input.
  *
  *  @param str    std::string containing the hexadecimal string to be parsed.
@@ -430,7 +424,7 @@ inline bool parse_hex_number(const std::string &str, T &retval)
  *  Parses a std::string containing a hexadecimal
  *  string into a templated (T) variable.
  *
- *  NOTE:  Currently doesn't detect overflow
+ *  @remark Currently doesn't detect overflow
  *
  *  @param str    std::string containing the hexadecimal
  *                string to be parsed.
@@ -477,7 +471,7 @@ std::string render_hex_number(T value, const bool caps = false)
 /**
  *  Renders a single byte as a hexadecimal string
  *
- *  @param value  Unsigned char (byte) to be represented as hexadecimal.
+ *  @param uc     Unsigned char (byte) to be represented as hexadecimal.
  *  @param caps   Boolean (default false) which sets the outout to
  *                be either lower case (false) or upper case (true).
  *

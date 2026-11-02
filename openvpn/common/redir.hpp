@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_COMMON_REDIR_H
 #define OPENVPN_COMMON_REDIR_H
@@ -49,14 +39,12 @@ struct RedirectBase
     OPENVPN_EXCEPTION(redirect_std_err);
     virtual void redirect() = 0;
     virtual void close() = 0;
-    virtual ~RedirectBase()
-    {
-    }
+    virtual ~RedirectBase() = default;
 };
 
 struct RedirectStdFD : public RedirectBase
 {
-    virtual void redirect() noexcept override
+    void redirect() noexcept override
     {
         // stdin
         if (in.defined())
@@ -87,7 +75,7 @@ struct RedirectStdFD : public RedirectBase
         close();
     }
 
-    virtual void close() override
+    void close() override
     {
         in.close();
         out.close();
@@ -150,9 +138,7 @@ class RedirectStd : public RedirectStdFD
     }
 
   protected:
-    RedirectStd()
-    {
-    }
+    RedirectStd() = default;
 
     void open_input(const std::string &fn)
     {
@@ -222,9 +208,7 @@ class RedirectPipe : public RedirectStdFD
         std::string err;
     };
 
-    RedirectPipe()
-    {
-    }
+    RedirectPipe() = default;
 
     RedirectPipe(RedirectStdFD &remote,
                  const unsigned int flags_arg)

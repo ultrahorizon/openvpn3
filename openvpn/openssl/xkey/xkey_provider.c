@@ -4,21 +4,12 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2022 OpenVPN Inc.
+//    Copyright (C) 2022- OpenVPN Inc.
 //    Copyright (C) 2021-2022 Selva Nair <selva.nair@gmail.com>
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception OR GPL-2.0-only WITH openvpn-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
+
 
 
 #include "xkey_common.h"
@@ -542,15 +533,14 @@ keymgmt_set_params(void *keydata, const OSSL_PARAM *params)
     {
         return keymgmt_import_helper(key, params);
     }
-    else if (key->handle == NULL) /* once handle is set our key is immutable */
+    if (key->handle == NULL) /* once handle is set our key is immutable */
     {
         /* pubkey is always native -- just delegate */
         return EVP_PKEY_set_params(key->pubkey, (OSSL_PARAM *)params);
     }
-    else
-    {
-        msg(M_WARN, "xkey keymgmt_set_params: key is immutable");
-    }
+    
+            msg(M_WARN, "xkey keymgmt_set_params: key is immutable");
+   
     return 1;
 }
 
@@ -574,7 +564,7 @@ ec_keymgmt_name(int id)
     /* though we do not implement keyexch we could be queried for
      * keyexch mechanism supported by EC keys
      */
-    else if (id == OSSL_OP_KEYEXCH)
+    if (id == OSSL_OP_KEYEXCH)
     {
         return "ECDH";
     }

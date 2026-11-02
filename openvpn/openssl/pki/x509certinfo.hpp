@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 //
 //
 //  Generic functions for extracting X.509 Certificate info from
@@ -37,8 +27,9 @@
 #include "openvpn/common/hexstr.hpp"
 #include "openvpn/common/uniqueptr.hpp"
 
-namespace openvpn {
-namespace OpenSSLPKI {
+namespace openvpn::OpenSSLPKI {
+
+using BIGNUM_ptr = std::unique_ptr<::BIGNUM, decltype(&::BN_free)>;
 
 /**
  *  Retrieve the complete X.509 Certificate Subject field
@@ -64,7 +55,7 @@ namespace OpenSSLPKI {
  *         If it was not possible to retrieve the subject, and empty string
  *         is returned.
  */
-static std::string x509_get_subject(::X509 *cert, bool new_format = false)
+static inline std::string x509_get_subject(::X509 *cert, bool new_format = false)
 {
     if (!new_format)
     {
@@ -74,8 +65,7 @@ static std::string x509_get_subject(::X509 *cert, bool new_format = false)
             { OPENSSL_free(p); });
         if (subject)
             return std::string(subject.get());
-        else
-            return std::string("");
+        return std::string("");
     }
 
     unique_ptr_del<BIO> subject_bio(BIO_new(BIO_s_mem()),
@@ -104,12 +94,24 @@ static std::string x509_get_subject(::X509 *cert, bool new_format = false)
                        subject_mem->data + subject_mem->length);
 }
 
+static inline std::string X509_get_pem_encoding(::X509 *cert)
+{
+    char *data;
+    BIO *bio = BIO_new(BIO_s_mem());
+    /* Even though PEM_write_bio_X509 should not modify the argument the official API does not have a const argument */
+    PEM_write_bio_X509(bio, cert);
+    size_t len = BIO_get_mem_data(bio, &data);
+    std::string certpem{data, len};
+    BIO_free(bio);
+    return certpem;
+}
+
 /**
  * Retrives the algorithm used to sign a X509 certificate
  * @param cert 	OpenSSL certificate
  * @return
  */
-static const std::string x509_get_signature_algorithm(const ::X509 *cert)
+static inline std::string x509_get_signature_algorithm(const ::X509 *cert)
 {
     int nid = X509_get_signature_nid(cert);
     const char *sig = OBJ_nid2sn(nid);
@@ -118,8 +120,7 @@ static const std::string x509_get_signature_algorithm(const ::X509 *cert)
     {
         return sig;
     }
-    else
-        return "(error getting signature algorithm)";
+    return "(error getting signature algorithm)";
 }
 
 /**
@@ -134,18 +135,19 @@ static const std::string x509_get_signature_algorithm(const ::X509 *cert)
  *         resulting string may be empty if the extraction failed or the field
  *         is empty.
  */
-static std::string x509_get_field(::X509 *cert, const int nid)
+static inline std::string x509_get_field(::X509 *cert, const int nid)
 {
     static const char nullc = '\0';
     std::string ret;
-    X509_NAME *x509_name = X509_get_subject_name(cert);
+
+    auto *x509_name = X509_get_subject_name(cert);
     int i = X509_NAME_get_index_by_NID(x509_name, nid, -1);
     if (i >= 0)
     {
-        X509_NAME_ENTRY *ent = X509_NAME_get_entry(x509_name, i);
+        const X509_NAME_ENTRY *ent = X509_NAME_get_entry(x509_name, i);
         if (ent)
         {
-            ASN1_STRING *val = X509_NAME_ENTRY_get_data(ent);
+            const ASN1_STRING *val = X509_NAME_ENTRY_get_data(ent);
             unsigned char *buf;
             buf = (unsigned char *)1; // bug in OpenSSL 0.9.6b ASN1_STRING_to_UTF8
                                       // requires this workaround
@@ -163,7 +165,9 @@ static std::string x509_get_field(::X509 *cert, const int nid)
         i = X509_get_ext_by_NID(cert, nid, -1);
         if (i >= 0)
         {
-            X509_EXTENSION *ext = X509_get_ext(cert, i);
+            /* auto is used here to get const with newer OpenSSL 4.0 and without const
+             * otherwise to match the call to X509V3_EXT_print */
+            auto *ext = X509_get_ext(cert, i);
             if (ext)
             {
                 BIO *bio = BIO_new(BIO_s_mem());
@@ -195,22 +199,27 @@ static std::string x509_get_field(::X509 *cert, const int nid)
  *
  * @return Returns the numeric representation of the certificate serial number
  *         as a std::string.
+ *
+ *         In case of failure, an empty string is returned.
  */
-static std::string x509_get_serial(::X509 *cert)
+static inline std::string x509_get_serial(::X509 *cert)
 {
-    ASN1_INTEGER *asn1_i;
-    BIGNUM *bignum;
-    char *openssl_serial;
+    const ASN1_INTEGER *asn1_i = X509_get_serialNumber(cert);
+    const OpenSSLPKI::BIGNUM_ptr bignum(ASN1_INTEGER_to_BN(asn1_i, nullptr), BN_free);
+    if (!bignum)
+    {
+        return {};
+    }
 
-    asn1_i = X509_get_serialNumber(cert);
-    bignum = ASN1_INTEGER_to_BN(asn1_i, NULL);
-    openssl_serial = BN_bn2dec(bignum);
+    char *openssl_serial = BN_bn2dec(bignum.get());
+
+    if (!openssl_serial)
+    {
+        return {};
+    }
 
     const std::string ret = openssl_serial;
-
-    BN_free(bignum);
     OPENSSL_free(openssl_serial);
-
     return ret;
 }
 
@@ -222,27 +231,37 @@ static std::string x509_get_serial(::X509 *cert)
  *
  * @return Returns the hexadecimal representation of the certificate
  *         serial number as a std::string.
+ *
+ *         In case of failure, an empty string is returned.
  */
-static std::string x509_get_serial_hex(::X509 *cert)
+static inline std::string x509_get_serial_hex(::X509 *cert)
 {
-    const ASN1_INTEGER *asn1_i = X509_get_serialNumber(cert);
-    return render_hex_sep(asn1_i->data, asn1_i->length, ':', false);
+    const ASN1_INTEGER *asn1_i = X509_get0_serialNumber(cert);
+    const OpenSSLPKI::BIGNUM_ptr serial(ASN1_INTEGER_to_BN(asn1_i, nullptr), BN_free);
+
+    if (!serial)
+        return {};
+
+    int numbytesoutput = BN_num_bytes(serial.get());
+
+    std::unique_ptr<unsigned char[]> buf(new unsigned char[numbytesoutput]);
+
+    BN_bn2binpad(serial.get(), buf.get(), numbytesoutput);
+    return render_hex_sep(buf.get(), numbytesoutput, ':', false);
 }
 
 /**
  *  Retrieves the X.509 certificate SHA256 fingerprint as binary
  *
- * @param cert     Pointer to a native OpenSSL X509 object containing the
- *                 certificate
- *
  * @return Returns a uint8_t std:vector containing the binary representation
  *         of the certificate's SHA256 fingerprint.
  */
-static std::size_t x509_fingerprint_size()
+static inline std::size_t x509_fingerprint_size()
 {
     return EVP_MD_size(EVP_sha256());
 }
-static std::vector<uint8_t> x509_get_fingerprint(const ::X509 *cert)
+
+static inline std::vector<uint8_t> x509_get_fingerprint(const ::X509 *cert)
 {
     std::vector<uint8_t> fingerprint;
     fingerprint.resize(x509_fingerprint_size());
@@ -253,5 +272,4 @@ static std::vector<uint8_t> x509_get_fingerprint(const ::X509 *cert)
     return fingerprint;
 }
 
-} // namespace OpenSSLPKI
-} // namespace openvpn
+} // namespace openvpn::OpenSSLPKI

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Sender side of reliability layer
 
@@ -36,7 +26,7 @@ template <typename PACKET>
 class ReliableSendTemplate
 {
   public:
-    typedef reliable::id_t id_t;
+    using id_t = reliable::id_t;
 
     class Message : public ReliableMessageBase<PACKET>
     {
@@ -70,14 +60,14 @@ class ReliableSendTemplate
         : next(0)
     {
     }
-    ReliableSendTemplate(const id_t span)
+    ReliableSendTemplate(const id_t span, id_t start_at = 0)
     {
-        init(span);
+        init(span, start_at);
     }
 
-    void init(const id_t span)
+    void init(const id_t span, id_t start_at = 0)
     {
-        next = 0;
+        next = start_at;
         window_.init(next, span);
     }
 
@@ -116,7 +106,7 @@ class ReliableSendTemplate
             const Message &msg = ref_by_id(i);
             if (msg.defined())
             {
-                Time::Duration ut = msg.until_retransmit(now);
+                const Time::Duration ut = msg.until_retransmit(now);
                 if (ut < ret)
                     ret = ut;
             }

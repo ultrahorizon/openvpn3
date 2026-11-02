@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Crypto digest/HMAC API
 
@@ -34,7 +24,7 @@ namespace openvpn {
 class DigestInstance : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<DigestInstance> Ptr;
+    using Ptr = RCPtr<DigestInstance>;
 
     virtual void update(const unsigned char *in, const size_t size) = 0;
     virtual size_t final(unsigned char *out) = 0;
@@ -44,7 +34,7 @@ class DigestInstance : public RC<thread_unsafe_refcount>
 class HMACInstance : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<HMACInstance> Ptr;
+    using Ptr = RCPtr<HMACInstance>;
 
     virtual void reset() = 0;
     virtual void update(const unsigned char *in, const size_t size) = 0;
@@ -55,7 +45,7 @@ class HMACInstance : public RC<thread_unsafe_refcount>
 class DigestFactory : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<DigestFactory> Ptr;
+    using Ptr = RCPtr<DigestFactory>;
 
     virtual DigestInstance::Ptr new_digest(const CryptoAlgs::Type digest_type) = 0;
 

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Find default gateways on Linux using ip route command
 
@@ -154,10 +144,9 @@ struct LinuxGW46Netlink
     {
         if (v4.defined())
             return v4.dev();
-        else if (v6.defined())
+        if (v6.defined())
             return v6.dev();
-        else
-            throw LinuxGWNetlink::linux_gw_netlink_error("cannot determine gateway interface");
+        throw LinuxGWNetlink::linux_gw_netlink_error("cannot determine gateway interface");
     }
 
     LinuxGWNetlink v4;

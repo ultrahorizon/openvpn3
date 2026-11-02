@@ -1,7 +1,7 @@
 // This test demonstrates an alternative to dynamic_cast
 // using std::typeindex that is much faster.
 
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <typeindex>
 #include <vector>
@@ -17,7 +17,7 @@ namespace {
 struct Base : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<Base> Ptr;
+    using Ptr = RCPtr<Base>;
 
     virtual std::string to_string() const = 0;
 
@@ -51,11 +51,10 @@ class Wrapper : public Base
     {
         if (maybe_my_type->type() == static_type())
             return static_cast<const Wrapper *>(maybe_my_type);
-        else
-            return nullptr;
+        return nullptr;
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         return "value=" + StringTempl::to_string(obj) + " obj_size=" + std::to_string(sizeof(obj));
     }
@@ -103,9 +102,9 @@ static Vec create_vec()
 } // namespace
 
 // simple test of self()
-TEST(typeindex, test)
+TEST(Typeindex, Test)
 {
-    typedef Wrapper<std::string> StringWrap;
+    using StringWrap = Wrapper<std::string>;
 
     const Vec vec = create_vec();
 
@@ -121,12 +120,12 @@ TEST(typeindex, test)
     }
 }
 
-#ifndef HAVE_VALGRIND
+#ifndef INSTRUMENTATION_SLOWDOWN
 
 // test performance of self() as alternative to dynamic_cast
-TEST(typeindex, perf_test_fast)
+TEST(Typeindex, PerfTestFast)
 {
-    typedef Wrapper<std::string> StringWrap;
+    using StringWrap = Wrapper<std::string>;
 
     const size_t N = 100000000;
 
@@ -143,13 +142,13 @@ TEST(typeindex, perf_test_fast)
             i = 0;
     }
     OPENVPN_LOG("PERF " << n_strings << '/' << N);
-    ASSERT_EQ(n_strings, 28571428);
+    ASSERT_EQ(n_strings, 28571428U);
 }
 
 // as a control, test performance of dynamic_cast
-TEST(typeindex, perf_test_dynamic)
+TEST(Typeindex, PerfTestDynamic)
 {
-    typedef Wrapper<std::string> StringWrap;
+    using StringWrap = Wrapper<std::string>;
 
     const size_t N = 100000000;
 
@@ -166,7 +165,7 @@ TEST(typeindex, perf_test_dynamic)
             i = 0;
     }
     OPENVPN_LOG("PERF " << n_strings << '/' << N);
-    ASSERT_EQ(n_strings, 28571428);
+    ASSERT_EQ(n_strings, 28571428U);
 }
 
 #endif

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Handle ACK tracking for reliability layer
 
@@ -30,7 +20,7 @@
 
 #include <openvpn/common/socktypes.hpp>
 #include <openvpn/buffer/buffer.hpp>
-#include <openvpn/crypto/packet_id.hpp>
+#include <openvpn/crypto/packet_id_control.hpp>
 #include <openvpn/reliable/relcommon.hpp>
 
 namespace openvpn {
@@ -40,7 +30,7 @@ class ReliableAck
   public:
     static constexpr size_t maximum_acks_ack_v1 = 8;
     static constexpr size_t maximum_acks_control_v1 = 4;
-    typedef reliable::id_t id_t;
+    using id_t = reliable::id_t;
 
     explicit ReliableAck() = default;
     size_t size() const;
@@ -102,11 +92,11 @@ class ReliableAck
      */
     void prepend(Buffer &buf, bool ackv1)
     {
-        size_t max_acks = ackv1 ? maximum_acks_ack_v1 : maximum_acks_control_v1;
+        const size_t max_acks = ackv1 ? maximum_acks_ack_v1 : maximum_acks_control_v1;
 
         size_t acks_added = 0;
 
-        while (acks_added < max_acks && data.size() > 0)
+        while (acks_added < max_acks && !data.empty())
         {
             auto ack = data.front();
             data.pop_front();

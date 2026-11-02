@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Emulate Excluded Routes implementation (needed by Android)
 
@@ -34,7 +24,7 @@ class EmulateExcludeRouteImpl : public EmulateExcludeRoute
   public:
     OPENVPN_EXCEPTION(emulate_exclude_route_error);
 
-    typedef RCPtr<EmulateExcludeRouteImpl> Ptr;
+    using Ptr = RCPtr<EmulateExcludeRouteImpl>;
 
     explicit EmulateExcludeRouteImpl(const bool exclude_server_address)
         : exclude_server_address_(exclude_server_address)
@@ -57,7 +47,7 @@ class EmulateExcludeRouteImpl : public EmulateExcludeRoute
 
     bool enabled(const IPVerFlags &ipv) const override
     {
-        return exclude.size() && (ipv.rgv4() || ipv.rgv6());
+        return !exclude.empty() && (ipv.rgv4() || ipv.rgv6());
     }
 
     void emulate(TunBuilderBase *tb, IPVerFlags &ipv, const IP::Addr &server_addr) const override
@@ -125,7 +115,7 @@ class EmulateExcludeRouteImpl : public EmulateExcludeRoute
         // excluded IPs.
         // Figure out if this particular route should be installed or not
 
-        IP::Route const *bestroute = nullptr;
+        const IP::Route *bestroute = nullptr;
         // Get the best (longest-prefix/smallest) route from included routes that completely
         // matches this route
         for (const auto &incRoute : include)
@@ -158,7 +148,7 @@ class EmulateExcludeRouteImpl : public EmulateExcludeRoute
 class EmulateExcludeRouteFactoryImpl : public EmulateExcludeRouteFactory
 {
   public:
-    typedef RCPtr<EmulateExcludeRouteFactoryImpl> Ptr;
+    using Ptr = RCPtr<EmulateExcludeRouteFactoryImpl>;
 
     EmulateExcludeRouteFactoryImpl(const bool exclude_server_address)
         : exclude_server_address_(exclude_server_address)
@@ -166,7 +156,7 @@ class EmulateExcludeRouteFactoryImpl : public EmulateExcludeRouteFactory
     }
 
   private:
-    virtual EmulateExcludeRoute::Ptr new_obj() const
+    EmulateExcludeRoute::Ptr new_obj() const override
     {
         return EmulateExcludeRoute::Ptr(new EmulateExcludeRouteImpl(exclude_server_address_));
     }

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_BUFFER_ZLIB_H
 #define OPENVPN_BUFFER_ZLIB_H
@@ -28,11 +18,17 @@
 
 #include <zlib.h>
 
+#include <openvpn/common/clamp_typerange.hpp>
 #include <openvpn/common/exception.hpp>
+#include <openvpn/common/numeric_cast.hpp>
 #include <openvpn/buffer/buffer.hpp>
 #include <openvpn/buffer/buflist.hpp>
 
+
 namespace openvpn {
+
+using namespace numeric_util;
+
 namespace ZLib {
 OPENVPN_EXCEPTION(zlib_error);
 
@@ -74,7 +70,7 @@ inline BufferPtr compress_gzip(BufferPtr src,
         int status;
         ZStream zs;
         zs.s.next_in = src->data();
-        zs.s.avail_in = src->size();
+        zs.s.avail_in = numeric_cast<decltype(zs.s.avail_in)>(src->size());
         status = ::deflateInit2(&zs.s,
                                 level,
                                 Z_DEFLATED,
@@ -84,10 +80,10 @@ inline BufferPtr compress_gzip(BufferPtr src,
         if (status != Z_OK)
             OPENVPN_THROW(zlib_error, "zlib deflateinit2 failed, error=" << status);
         const uLong outcap = ::deflateBound(&zs.s, src->size());
-        BufferPtr b = new BufferAllocated(outcap + headroom + tailroom, 0);
+        auto b = BufferAllocatedRc::Create(outcap + headroom + tailroom, BufAllocFlags::NO_FLAGS);
         b->init_headroom(headroom);
         zs.s.next_out = b->data();
-        zs.s.avail_out = outcap;
+        zs.s.avail_out = numeric_cast<decltype(zs.s.avail_out)>(outcap);
         status = ::deflate(&zs.s, Z_FINISH);
         if (status != Z_STREAM_END)
             OPENVPN_THROW(zlib_error, "zlib deflate failed, error=" << status);
@@ -120,7 +116,7 @@ inline BufferPtr decompress_gzip(BufferPtr src,
         int status;
         ZStream zs;
         zs.s.next_in = src->data();
-        zs.s.avail_in = src->size();
+        zs.s.avail_in = numeric_cast<decltype(zs.s.avail_in)>(src->size());
         status = ::inflateInit2(&zs.s, GZIP_ENCODING + window_bits);
         if (status != Z_OK)
             OPENVPN_THROW(zlib_error, "zlib inflateinit2 failed, error=" << status);
@@ -132,11 +128,11 @@ inline BufferPtr decompress_gzip(BufferPtr src,
         {
             // use headroom/tailroom on first block to take advantage
             // of BufferList::join() optimization for one-block lists
-            BufferPtr b = new BufferAllocated(block_size + hr + tr, 0);
+            auto b = BufferAllocatedRc::Create(block_size + hr + tr, BufAllocFlags::NO_FLAGS);
             b->init_headroom(hr);
             const size_t avail = b->remaining(tr);
             zs.s.next_out = b->data();
-            zs.s.avail_out = avail;
+            zs.s.avail_out = clamp_to_typerange<decltype(zs.s.avail_out)>(avail);
             status = ::inflate(&zs.s, Z_SYNC_FLUSH);
             if (status != Z_OK && status != Z_STREAM_END)
                 OPENVPN_THROW(zlib_error, "zlib inflate failed, error=" << status);

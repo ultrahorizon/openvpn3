@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Non-cryptographic random number generator
 
@@ -30,15 +20,29 @@
 #include <openvpn/random/randapi.hpp>
 #include <openvpn/random/randbytestore.hpp>
 
+
+//
+// Prevent compiler from inlining MTRand byte-fill loops into
+// larger call chains, which confuses the optimiser and triggers
+// false-positive -Warray-bounds / -Wstringop-overflow warnings.
+// This issue appeared first with GCC 16.1 with -O2
+//
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 16
+#define MTRAND_GCC_NO_INLINE __attribute__((noinline))
+#else
+#define MTRAND_GCC_NO_INLINE
+#endif
+
+
 namespace openvpn {
 
-class MTRand : public RandomAPI
+class MTRand : public WeakRandomAPI
 {
   public:
     OPENVPN_EXCEPTION(mtrand_error);
 
-    typedef RCPtr<MTRand> Ptr;
-    typedef std::mt19937_64 rand_type;
+    using Ptr = RCPtr<MTRand>;
+    using rand_type = std::mt19937_64;
 
     MTRand(RandomAPI &seed)
         : rng(gen_seed(seed))
@@ -56,29 +60,27 @@ class MTRand : public RandomAPI
     }
 
     // Random algorithm name
-    virtual std::string name() const
+    std::string name() const override
     {
         return "MTRand";
     }
 
-    // Return true if algorithm is crypto-strength
-    virtual bool is_crypto() const
-    {
-        return false;
-    }
-
     // Fill buffer with random bytes
-    virtual void rand_bytes(unsigned char *buf, size_t size)
+    MTRAND_GCC_NO_INLINE void rand_bytes(unsigned char *buf, size_t size) override
     {
-        if (!rndbytes(buf, size))
-            throw mtrand_error("rand_bytes failed");
+        while (size--)
+            *buf++ = rbs.get_byte(rng);
     }
 
-    // Like rand_bytes, but don't throw exception.
-    // Return true on successs, false on fail.
-    virtual bool rand_bytes_noexcept(unsigned char *buf, size_t size)
+    /**
+     * Like rand_bytes, but don't throw exception. At least that's the
+     * intent in the base class API. Here, neither function throws and
+     * we always return true (success).
+     **/
+    MTRAND_GCC_NO_INLINE bool rand_bytes_noexcept(unsigned char *buf, size_t size) override
     {
-        return rndbytes(buf, size);
+        rand_bytes(buf, size);
+        return true;
     }
 
     rand_type::result_type rand()
@@ -87,13 +89,6 @@ class MTRand : public RandomAPI
     }
 
   private:
-    bool rndbytes(unsigned char *buf, size_t size)
-    {
-        while (size--)
-            *buf++ = rbs.get_byte(rng);
-        return true;
-    }
-
     static rand_type::result_type gen_seed(RandomAPI &seed)
     {
         return seed.rand_get<rand_type::result_type>();

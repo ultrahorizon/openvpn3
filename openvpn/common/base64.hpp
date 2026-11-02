@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // General-purpose base64 encode and decode.
 
@@ -31,7 +21,6 @@
 
 #include <openvpn/common/size.hpp>
 #include <openvpn/common/exception.hpp>
-#include <openvpn/common/extern.hpp>
 
 namespace openvpn {
 
@@ -41,7 +30,10 @@ class Base64
     class ConstUCharWrap
     {
       public:
-        ConstUCharWrap(const unsigned char *data, size_t size)
+        using value_type = unsigned char;
+
+      public:
+        ConstUCharWrap(const value_type *data, size_t size)
             : data_(data),
               size_(size)
         {
@@ -51,14 +43,14 @@ class Base64
         {
             return size_;
         }
-        unsigned char operator[](const size_t i) const
+        value_type operator[](const size_t i) const
         {
             return data_[i];
         }
 
 
       private:
-        const unsigned char *data_;
+        const value_type *data_;
         size_t size_;
     };
 
@@ -70,12 +62,15 @@ class Base64
     class UCharWrap
     {
       public:
-        UCharWrap(unsigned char *data, size_t size)
+        using value_type = unsigned char;
+
+      public:
+        UCharWrap(value_type *data, size_t size)
             : data(data), size(size), index(0)
         {
         }
 
-        void push_back(unsigned char c)
+        void push_back(value_type c)
         {
             if (index >= size)
                 throw base64_decode_out_of_bound_error();
@@ -83,7 +78,7 @@ class Base64
             data[index++] = c;
         }
 
-        unsigned char *data;
+        value_type *data;
         size_t size;
         size_t index;
     };
@@ -99,7 +94,7 @@ class Base64
         // build encoding map
         {
             unsigned int i;
-            unsigned int j = 65;
+            unsigned char j = 65;
             for (i = 0; i < 62; ++i)
             {
                 enc[i] = j++;
@@ -209,13 +204,14 @@ class Base64
         const char *endp = str.c_str() + str.length();
         for (const char *p = str.c_str(); p < endp; p += 4)
         {
+            using vvalue_t = typename V::value_type;
             unsigned int marker;
             const unsigned int val = token_decode(p, std::min(endp - p, ptrdiff_t(4)), marker);
-            dest.push_back((val >> 16) & 0xff);
+            dest.push_back(static_cast<vvalue_t>((val >> 16) & 0xff));
             if (marker < 2)
-                dest.push_back((val >> 8) & 0xff);
+                dest.push_back(static_cast<vvalue_t>((val >> 8) & 0xff));
             if (marker < 1)
-                dest.push_back(val & 0xff);
+                dest.push_back(static_cast<vvalue_t>(val & 0xff));
         }
     }
 
@@ -300,8 +296,8 @@ class Base64
 
 // provide a static Base64 object
 
-OPENVPN_EXTERN const Base64 *base64;         // GLOBAL
-OPENVPN_EXTERN const Base64 *base64_urlsafe; // GLOBAL
+inline const Base64 *base64;         // GLOBAL
+inline const Base64 *base64_urlsafe; // GLOBAL
 
 inline void base64_init_static()
 {

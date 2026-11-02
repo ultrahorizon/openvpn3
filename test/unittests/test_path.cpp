@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <iostream>
 
@@ -12,43 +12,43 @@ static std::stringstream out;
 void test_basename(const std::string &path)
 {
     const std::string res = path::basename(path);
-    out << "basename('" << path << "') = '" << res << "'" << std::endl;
+    out << "basename('" << path << "') = '" << res << "'\n";
 }
 
 void dirname(const std::string &path)
 {
     const std::string res = path::dirname(path);
-    out << "dirname('" << path << "') = '" << res << "'" << std::endl;
+    out << "dirname('" << path << "') = '" << res << "'\n";
 }
 
 void ext(const std::string &path)
 {
     const std::string res = path::ext(path);
-    out << "ext('" << path << "') = '" << res << "'" << std::endl;
+    out << "ext('" << path << "') = '" << res << "'\n";
 }
 
 void is_flat(const std::string &path)
 {
     const bool res = path::is_flat(path);
-    out << "is_flat('" << path << "') = " << res << std::endl;
+    out << "is_flat('" << path << "') = " << res << '\n';
 }
 
 void join(const std::string &p1, const std::string &p2)
 {
     const std::string res = path::join(p1, p2);
-    out << "join('" << p1 << "', '" << p2 << "') = '" << res << "'" << std::endl;
+    out << "join('" << p1 << "', '" << p2 << "') = '" << res << "'\n";
 }
 
 void join3(const std::string &p1, const std::string &p2, const std::string &p3)
 {
     const std::string res = path::join(p1, p2, p3);
-    out << "join('" << p1 << "', '" << p2 << "', '" << p3 << "') = '" << res << "'" << std::endl;
+    out << "join('" << p1 << "', '" << p2 << "', '" << p3 << "') = '" << res << "'\n";
 }
 
 void join4(const std::string &p1, const std::string &p2, const std::string &p3, const std::string &p4)
 {
     const std::string res = path::join(p1, p2, p3, p4);
-    out << "join('" << p1 << "', '" << p2 << "', '" << p3 << "', '" << p4 << "') = '" << res << "'" << std::endl;
+    out << "join('" << p1 << "', '" << p2 << "', '" << p3 << "', '" << p4 << "') = '" << res << "'\n";
 }
 
 void splitjoin(const std::string &p1)
@@ -56,10 +56,10 @@ void splitjoin(const std::string &p1)
     const std::string d = path::dirname(p1);
     const std::string b = path::basename(p1);
     const std::string p2 = path::join(d, b);
-    out << "splitjoin p1='" << p1 << "' dir='" << d << "' bn='" << b << "' p2='" << p2 << "'" << std::endl;
+    out << "splitjoin p1='" << p1 << "' dir='" << d << "' bn='" << b << "' p2='" << p2 << "'\n";
 }
 
-TEST(path, test1)
+TEST(Path, Test1)
 {
     out.clear();
     out.str("");
@@ -137,7 +137,7 @@ void test_contained(const std::string &path, const bool expected)
     ASSERT_EQ(contained, expected);
 }
 
-TEST(path, test2)
+TEST(Path, Test2)
 {
     test_contained("", false);
     test_contained(".", true);
@@ -166,15 +166,4 @@ TEST(path, test2)
     test_contained("foo/./bar", true);
     test_contained("foo/../bar", false);
     test_contained("foo/.../bar", true);
-}
-
-void test_join_speed()
-{
-    size_t count = 0;
-    for (int i = 0; i < 10000000; ++i)
-    {
-        const std::string s = path::join("one", "two", "three", "four");
-        count += s.length();
-    }
-    std::cout << count << std::endl;
 }

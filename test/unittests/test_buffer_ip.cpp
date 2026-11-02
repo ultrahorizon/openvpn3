@@ -3,7 +3,7 @@
 
 #include <arpa/inet.h>
 
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <openvpn/buffer/bufstatic.hpp>
 #include <openvpn/buffer/bufip.hpp>
@@ -18,9 +18,9 @@ static std::string to_hex(const std::uint32_t value)
     return os.str();
 }
 
-TEST(buffer_ip, unsigned_decimal)
+TEST(BufferIp, UnsignedDecimal)
 {
-    typedef BufferFormat::UnsignedDecimal<std::uint32_t> Decimal;
+    using Decimal = BufferFormat::UnsignedDecimal<std::uint32_t>;
     for (int i = -1000; i < 1000; ++i)
     {
         StaticBuffer<Decimal::max_length()> buf;
@@ -29,9 +29,9 @@ TEST(buffer_ip, unsigned_decimal)
     }
 }
 
-TEST(buffer_ip, hex)
+TEST(BufferIp, Hex)
 {
-    typedef BufferFormat::Hex<std::uint32_t> Hex;
+    using Hex = BufferFormat::Hex<std::uint32_t>;
     for (int i = -1000; i < 1000; ++i)
     {
         StaticBuffer<10> buf;
@@ -40,15 +40,15 @@ TEST(buffer_ip, hex)
     }
 }
 
-#ifdef HAVE_VALGRIND
+#ifdef INSTRUMENTATION_SLOWDOWN
 static constexpr int ITER = 10000;
 #else
 static constexpr int ITER = 1000000;
 #endif
 
-TEST(buffer_ip, ipv4)
+TEST(BufferIp, Ipv4)
 {
-    MTRand::Ptr prng(new MTRand());
+    const MTRand::Ptr prng(new MTRand());
     for (int count = 0; count < ITER; ++count)
     {
         std::uint32_t addr;
@@ -65,9 +65,9 @@ TEST(buffer_ip, ipv4)
     }
 }
 
-TEST(buffer_ip, ipv6)
+TEST(BufferIp, Ipv6)
 {
-    MTRand::Ptr prng(new MTRand());
+    const MTRand::Ptr prng(new MTRand());
     for (int count = 0; count < ITER; ++count)
     {
         std::uint8_t addr[16];

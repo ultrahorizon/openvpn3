@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // General purpose string-manipulation functions.
 
@@ -25,16 +15,19 @@
 #define OPENVPN_COMMON_STRING_H
 
 #include <string>
+#include <string_view>
 #include <vector>
 #include <cstring>
-#include <cctype>
+#include <locale>
 #include <algorithm>
+#include <optional>
+
+#include <fmt/format.h>
 
 #include <openvpn/common/platform.hpp>
 #include <openvpn/common/size.hpp>
 
-namespace openvpn {
-namespace string {
+namespace openvpn::string {
 // case insensitive compare functions
 
 inline int strcasecmp(const char *s1, const char *s2)
@@ -86,72 +79,20 @@ inline bool is_true(const std::string &str)
     return str == "1" || !strcasecmp(str.c_str(), "true");
 }
 
-template <typename STRING>
-inline bool starts_with(const STRING &str, const std::string &prefix)
-{
-    const size_t len = str.length();
-    const size_t plen = prefix.length();
-    if (plen <= len)
-        return std::memcmp(str.c_str(), prefix.c_str(), plen) == 0;
-    else
-        return false;
-}
-
-template <typename STRING>
-inline bool starts_with(const STRING &str, const char *prefix)
-{
-    const size_t len = str.length();
-    const size_t plen = std::strlen(prefix);
-    if (plen <= len)
-        return std::memcmp(str.c_str(), prefix, plen) == 0;
-    else
-        return false;
-}
-
 // Return true if str == prefix or if str starts with prefix + delim
 template <typename STRING>
 inline bool starts_with_delim(const STRING &str, const std::string &prefix, const char delim)
 {
     if (prefix.length() < str.length())
-        return str[prefix.length()] == delim && string::starts_with(str, prefix);
-    else
-        return prefix == str;
-}
-
-template <typename STRING>
-inline bool ends_with(const STRING &str, const std::string &suffix)
-{
-    const size_t len = str.length();
-    const size_t slen = suffix.length();
-    if (slen <= len)
-        return std::memcmp(str.c_str() + (len - slen), suffix.c_str(), slen) == 0;
-    else
-        return false;
-}
-
-template <typename STRING>
-inline bool ends_with(const STRING &str, const char *suffix)
-{
-    const size_t len = str.length();
-    const size_t slen = std::strlen(suffix);
-    if (slen <= len)
-        return std::memcmp(str.c_str() + (len - slen), suffix, slen) == 0;
-    else
-        return false;
-}
-
-// return true if string ends with char c
-template <typename STRING>
-inline bool ends_with(const STRING &str, const char c)
-{
-    return str.length() && str.back() == c;
+        return str[prefix.length()] == delim && str.starts_with(prefix);
+    return prefix == str;
 }
 
 // return true if string ends with a newline
 template <typename STRING>
 inline bool ends_with_newline(const STRING &str)
 {
-    return ends_with(str, '\n');
+    return str.ends_with('\n');
 }
 
 // return true if string ends with a CR or LF
@@ -163,8 +104,7 @@ inline bool ends_with_crlf(const STRING &str)
         const char c = str.back();
         return c == '\n' || c == '\r';
     }
-    else
-        return false;
+    return false;
 }
 
 // Prepend leading characters (c) to str to obtain a minimum string length (min_len).
@@ -185,27 +125,26 @@ inline std::string add_leading(const std::string &str, const size_t min_len, con
 // make sure that string ends with char c, if not append it
 inline std::string add_trailing_copy(const std::string &str, const char c)
 {
-    if (ends_with(str, c))
+    if (str.ends_with(c))
         return str;
-    else
-        return str + c;
+    return str + c;
 }
 
 // make sure that string ends with char c, if not append it
 inline void add_trailing(std::string &str, const char c)
 {
-    if (!ends_with(str, c))
+    if (!str.ends_with(c))
         str += c;
 }
 
 // make sure that string ends with CRLF, if not append it
 inline void add_trailing_crlf(std::string &str)
 {
-    if (ends_with(str, "\r\n"))
+    if (str.ends_with("\r\n"))
         ;
-    else if (ends_with(str, '\r'))
+    else if (str.ends_with('\r'))
         str += '\n';
-    else if (ends_with(str, '\n'))
+    else if (str.ends_with('\n'))
     {
         str.pop_back();
         str += "\r\n";
@@ -224,10 +163,9 @@ inline std::string add_trailing_crlf_copy(std::string str)
 // make sure that string ends with char c, if not append it (unless the string is empty)
 inline std::string add_trailing_unless_empty_copy(const std::string &str, const char c)
 {
-    if (str.empty() || ends_with(str, c))
+    if (str.empty() || str.ends_with(c))
         return str;
-    else
-        return str + c;
+    return str + c;
 }
 
 // remove trailing \r or \n chars
@@ -275,8 +213,7 @@ inline std::string to_delim(const std::string &str, const char delim)
     const size_t pos = str.find_first_of(delim);
     if (pos != std::string::npos)
         return str.substr(0, pos);
-    else
-        return str;
+    return str;
 }
 
 // return the first line (without newline) of a multi-line string
@@ -285,8 +222,20 @@ inline std::string first_line(const std::string &str)
     return to_delim(str, '\n');
 }
 
-// Define a common interpretation of what constitutes a space character.
-// Return true if c is a space char.
+/**
+ * Define a common interpretation of what constitutes a space character.
+ *
+ * According to the Notes section at
+ * https://en.cppreference.com/w/cpp/string/byte/isspace.html:
+ *
+ * "Like all other functions from <cctype>, the behavior of `std::isspace`
+ * is undefined if the argument's value is neither representable as
+ * `unsigned char` nor equal to `EOF`. To use these functions safely with
+ * plain chars (or signed chars), the argument should first be converted
+ * to `unsigned char`"
+ *
+ * @return true if c is a space char.
+ **/
 inline bool is_space(const char c)
 {
     return std::isspace(static_cast<unsigned char>(c)) != 0;
@@ -413,7 +362,7 @@ inline std::string reduce_spaces(const std::string &str, const char rep)
 }
 
 // generate a string with n instances of char c
-inline std::string repeat(const char c, int n)
+inline std::string repeat(const char c, size_t n)
 {
     std::string ret;
     ret.reserve(n);
@@ -423,7 +372,7 @@ inline std::string repeat(const char c, int n)
 }
 
 // generate a string with spaces
-inline std::string spaces(int n)
+inline std::string spaces(size_t n)
 {
     return repeat(' ', n);
 }
@@ -499,13 +448,16 @@ inline std::string unix2dos(const std::string &str, const bool force_eol = false
 // Split a string on sep delimiter.  The size of the
 // returned string vector will be at least 1 and at
 // most maxsplit + 1 (unless maxsplit is passed as -1).
-inline std::vector<std::string> split(const std::string &str,
-                                      const char sep,
-                                      const int maxsplit = -1)
+template <typename T>
+inline std::vector<T> split(const T &str,
+                            const typename T::value_type sep,
+                            const int maxsplit = -1)
 {
-    std::vector<std::string> ret;
+    /* ensure we have a string as type */
+    static_assert(std::is_same_v<T, std::string> || std::is_same_v<T, std::wstring>);
+    std::vector<T> ret;
     int nterms = 0;
-    std::string term;
+    T term;
 
     if (maxsplit >= 0)
         ret.reserve(maxsplit + 1);
@@ -525,11 +477,14 @@ inline std::vector<std::string> split(const std::string &str,
     return ret;
 }
 
-inline std::string join(const std::vector<std::string> &strings,
-                        const std::string &delim,
-                        const bool tail = false)
+template <class T>
+inline auto join(const T &strings,
+                 const typename T::value_type &delim,
+                 const bool tail = false)
 {
-    std::string ret;
+    /* ensure we have a container with strings as values */
+    static_assert(std::is_same_v<typename T::value_type, std::string> || std::is_same_v<typename T::value_type, std::wstring>);
+    typename T::value_type ret;
     bool first = true;
     for (const auto &s : strings)
     {
@@ -582,18 +537,20 @@ inline std::string trim_copy(const std::string &str)
 inline std::string to_upper_copy(const std::string &str)
 {
     std::string ret;
+    std::locale loc;
     ret.reserve(str.length());
     for (const auto &c : str)
-        ret.push_back(std::toupper(static_cast<unsigned char>(c)));
+        ret.push_back(std::toupper(c, loc));
     return ret;
 }
 
 inline std::string to_lower_copy(const std::string &str)
 {
     std::string ret;
+    std::locale loc;
     ret.reserve(str.length());
     for (const auto &c : str)
-        ret.push_back(std::tolower(static_cast<unsigned char>(c)));
+        ret.push_back(std::tolower(c, loc));
     return ret;
 }
 
@@ -669,8 +626,70 @@ inline std::string remove_blanks(const std::string &str)
     return ret;
 }
 
-} // namespace string
+// copy str to the return value, removing all instances of
+// chars that match remove
+inline std::string remove_char(const std::string &str, const char remove)
+{
+    std::string ret;
+    ret.reserve(str.length());
+    for (const auto c : str)
+    {
+        if (c != remove)
+            ret.push_back(c);
+    }
+    return ret;
+}
 
-} // namespace openvpn
+/**
+    @brief Convert variadic arguments to a string.
+    @details This function takes a delimiter and a variadic number of arguments,
+    and concatenates them into a single string, separated by the specified delimiter.
+    The function uses a fold expression to handle the variadic arguments and
+    formats each argument using format. The resulting string is returned.
+    @note The function is designed to work with any type that can be formatted
+    @tparam ArgsT variadic template parameter pack for the arguments to be formatted.
+    @param delim The delimiter to be used for separating the arguments in the resulting string.
+    @param args The variadic arguments to be concatenated into a string.
+    @return std::string The concatenated string with the specified delimiter separating
+    the arguments.
+    @throws format_error if formatting fails.
+    @throws exceptions from std::string operations
+*/
+template <typename... ArgsT>
+inline auto args_to_string(std::string_view delim, ArgsT &&...args) -> std::string
+{
+    std::string result;
+    ((result += std::string(result.empty() ? "" : delim) + fmt::format("{}", args)), ...);
+    return result;
+}
+
+/**
+    @brief Format a string with error handling.
+    @details This function attempts to format a string using the provided format
+    and arguments. If an exception occurs during formatting, it catches the exception
+    and returns std::nullopt to indicate that the formatting failed.
+    @tparam ArgsT variadic template parameter pack for the arguments to be formatted.
+    @param format The format string to be used for formatting.
+    @param args The arguments to be formatted into the string.
+    @return std::optional<std::string> The formatted string or nullopt on format error
+    @note This function uses vformat and make_format_args for formatting.
+    @note The function is designed to handle exceptions that may occur during formatting,
+    including std::exception and other unknown exceptions. If an exception occurs,
+    it returns a nullopt to indicate that the formatting failed.
+*/
+template <typename... ArgsT>
+inline auto format_safe(std::string format, ArgsT &&...args) noexcept -> std::optional<std::string>
+{
+    try
+    {
+        return fmt::vformat(format, fmt::make_format_args(args...));
+    }
+    catch (...)
+    {
+        return std::nullopt;
+    }
+}
+
+} // namespace openvpn::string
 
 #endif // OPENVPN_COMMON_STRING_H

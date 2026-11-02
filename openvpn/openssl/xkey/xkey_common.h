@@ -4,32 +4,23 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2022 OpenVPN Inc.
+//    Copyright (C) 2022- OpenVPN Inc.
 //    Copyright (C) 2021-2022 Selva Nair <selva.nair@gmail.com>
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception OR GPL-2.0-only WITH openvpn-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
+
 
 #ifndef XKEY_COMMON_H_
 #define XKEY_COMMON_H_
 
-#if defined (__cplusplus)
+#ifdef __cplusplus
 extern "C" {
 #endif
 
 /* Guard to only enable if OpenSSL is used and not trigger an error if mbed
  * TLS is compiled without OpenSSL being installed */
-#if defined(USE_OPENSSL)
+#ifdef USE_OPENSSL
 #include <openssl/opensslv.h>
 #if OPENSSL_VERSION_NUMBER >= 0x30000010L && !defined(DISABLE_XKEY_PROVIDER)
 #define HAVE_XKEY_PROVIDER 1
@@ -140,7 +131,7 @@ void xkey_set_logging_cb_function(XKEY_LOGGING_CALLBACK_fn logfunc);
 
 #endif /* USE_OPENSSL */
 
-#if defined (__cplusplus)
+#ifdef __cplusplus
 }
 #endif
 #endif /* XKEY_COMMON_H_ */

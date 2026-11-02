@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_TIME_COARSETIME_H
 #define OPENVPN_TIME_COARSETIME_H
@@ -32,9 +22,7 @@ namespace openvpn {
 class CoarseTime
 {
   public:
-    CoarseTime()
-    {
-    }
+    CoarseTime() = default;
 
     CoarseTime(const Time::Duration &pre, const Time::Duration &post)
         : pre_(pre), post_(post)
@@ -62,11 +50,9 @@ class CoarseTime
         {
             if (t >= time_)
                 return (t - time_) <= post_;
-            else
-                return (time_ - t) <= pre_;
+            return (time_ - t) <= pre_;
         }
-        else
-            return false;
+        return false;
     }
 
   private:

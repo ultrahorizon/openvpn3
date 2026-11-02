@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // A queue of buffers, implemented as std::deque<BufferPtr>.
 
@@ -63,6 +53,13 @@ class MemQBase
 
     void write_buf(const BufferPtr &bp)
     {
+        // An empty buffer has nothing to queue but would still make empty() lie, since that
+        // answers for the queue and not for what is in it: the queue would look ready while
+        // reading it yields nothing, and a reader with no bytes and no reason to wait takes
+        // that for the end of the stream.
+        if (bp->empty())
+            return;
+
         q.push_back(bp);
         length += bp->size();
     }
@@ -92,7 +89,7 @@ class MemQBase
     }
 
   protected:
-    typedef std::deque<BufferPtr> q_type;
+    using q_type = std::deque<BufferPtr>;
     size_t length;
     q_type q;
 };

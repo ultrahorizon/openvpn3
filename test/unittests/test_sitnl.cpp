@@ -4,23 +4,15 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
+
 
 #include <fstream>
 #include <sys/capability.h>
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include "openvpn/common/argv.hpp"
 #include "openvpn/common/process.hpp"
@@ -68,10 +60,10 @@ class SitnlTest : public testing::Test
     static void SetUpTestSuite()
     {
         // different distros have ip tool in different places
-        std::vector<std::string> paths{"/bin/ip", "/sbin/ip", "/usr/bin/ip", "/usr/sbin/ip"};
+        const std::vector<std::string> paths{"/bin/ip", "/sbin/ip", "/usr/bin/ip", "/usr/sbin/ip"};
         for (const auto &path : paths)
         {
-            std::ifstream f(path);
+            const std::ifstream f(path);
             if (f)
             {
                 path_to_ip = path;
@@ -106,7 +98,7 @@ class SitnlTest : public testing::Test
     }
 
     template <typename CALLBACK>
-    void cmd(Argv argv, CALLBACK cb)
+    void cmd(const Argv &argv, CALLBACK cb)
     {
         // runs command, reads output and calls a callback
         RedirectPipe::InOut pipe;
@@ -134,7 +126,6 @@ class SitnlTest : public testing::Test
     void ip_a_show_dev(CALLBACK cb)
     {
         // get addrs with "ip a show dev"
-        RedirectPipe::InOut pipe;
         Argv argv;
         argv.emplace_back(path_to_ip);
         argv.emplace_back("a");
@@ -148,7 +139,6 @@ class SitnlTest : public testing::Test
     void ip_route_get(std::string dst, CALLBACK cb)
     {
         // get route with "ip route get"
-        RedirectPipe::InOut pipe;
         Argv argv;
         argv.emplace_back(path_to_ip);
         argv.emplace_back("route");
@@ -176,7 +166,7 @@ class SitnlTest : public testing::Test
 TEST_F(SitnlTest, TestAddrAdd4)
 {
     auto broadcast = IPv4::Addr::from_string(addr4) | ~IPv4::Addr::netmask_from_prefix_len(ipv4_prefix_len);
-    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), ipv4_prefix_len, broadcast), 0);
+    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), static_cast<unsigned char>(ipv4_prefix_len), broadcast), 0);
 
     ip_a_show_dev([this, &broadcast](std::vector<std::string> &v, const std::string &out, bool &called)
                   {
@@ -190,7 +180,7 @@ TEST_F(SitnlTest, TestAddrAdd4)
 
 TEST_F(SitnlTest, TestAddrAdd6)
 {
-    ASSERT_EQ(SITNL::net_addr_add(dev, IPv6::Addr::from_string(addr6), ipv6_prefix_len), 0);
+    ASSERT_EQ(SITNL::net_addr_add(dev, IPv6::Addr::from_string(addr6), static_cast<unsigned char>(ipv6_prefix_len)), 0);
 
     ip_a_show_dev([this](std::vector<std::string> &v, const std::string &out, bool &called)
                   {
@@ -218,7 +208,7 @@ TEST_F(SitnlTest, TestAddRoute4)
 {
     // add address
     auto broadcast = IPv4::Addr::from_string(addr4) | ~IPv4::Addr::netmask_from_prefix_len(ipv4_prefix_len);
-    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), ipv4_prefix_len, broadcast), 0);
+    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), static_cast<unsigned char>(ipv4_prefix_len), broadcast), 0);
 
     // up interface
     ASSERT_EQ(SITNL::net_iface_up(dev, true), 0);
@@ -242,7 +232,7 @@ TEST_F(SitnlTest, TestAddRoute4)
 TEST_F(SitnlTest, TestAddRoute6)
 {
     // add address
-    ASSERT_EQ(SITNL::net_addr_add(dev, IPv6::Addr::from_string(addr6), ipv6_prefix_len), 0);
+    ASSERT_EQ(SITNL::net_addr_add(dev, IPv6::Addr::from_string(addr6), static_cast<unsigned char>(ipv6_prefix_len)), 0);
 
     // up interface
     ASSERT_EQ(SITNL::net_iface_up(dev, true), 0);
@@ -261,7 +251,7 @@ TEST_F(SitnlTest, TestAddRoute6)
                  {
 	  if (v1[0] == dst || v1[0] == dst_trunc)
 	  {
-	    std::string dst_out = (v1[0] == dst) ? dst : dst_trunc;
+	     const std::string  dst_out = (v1[0] == dst) ? dst : dst_trunc;
 	    called = true;
 	    v1.resize(7);
 	    // iproute 4.15 (Ubuntu 18)
@@ -287,7 +277,7 @@ TEST_F(SitnlTest, TestBestGw4)
 {
     // add address
     auto broadcast = IPv4::Addr::from_string(addr4) | ~IPv4::Addr::netmask_from_prefix_len(ipv4_prefix_len);
-    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), ipv4_prefix_len, broadcast), 0);
+    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), static_cast<unsigned char>(ipv4_prefix_len), broadcast), 0);
 
     // up interface
     ASSERT_EQ(SITNL::net_iface_up(dev, true), 0);
@@ -317,10 +307,10 @@ TEST_F(SitnlTest, TestBestGw4FilterIface)
 {
     // add addresses
     auto broadcast = IPv4::Addr::from_string(addr4) | ~IPv4::Addr::netmask_from_prefix_len(ipv4_prefix_len);
-    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), ipv4_prefix_len, broadcast), 0);
+    ASSERT_EQ(SITNL::net_addr_add(dev, IPv4::Addr::from_string(addr4), static_cast<unsigned char>(ipv4_prefix_len), broadcast), 0);
 
     broadcast = IPv4::Addr::from_string("10.20.0.2") | ~IPv4::Addr::netmask_from_prefix_len(ipv4_prefix_len);
-    ASSERT_EQ(SITNL::net_addr_add(dev2, IPv4::Addr::from_string("10.20.0.2"), ipv4_prefix_len, broadcast), 0);
+    ASSERT_EQ(SITNL::net_addr_add(dev2, IPv4::Addr::from_string("10.20.0.2"), static_cast<unsigned char>(ipv4_prefix_len), broadcast), 0);
 
     // up interfaces
     SITNL::net_iface_up(dev, true);

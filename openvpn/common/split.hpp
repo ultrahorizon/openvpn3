@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // General string-splitting methods.  These methods along with lexical analyzer
 // classes (such as those defined in lex.hpp and OptionList::LexComment) can be
@@ -32,9 +22,13 @@
 
 #include <openvpn/common/size.hpp>
 #include <openvpn/common/lex.hpp>
+#include <openvpn/common/clamp_typerange.hpp>
 
-namespace openvpn {
-namespace Split {
+
+using namespace openvpn::numeric_util;
+
+namespace openvpn::Split {
+
 enum
 {
     TRIM_LEADING_SPACES = (1 << 0),
@@ -122,7 +116,7 @@ inline void by_space_void(V &ret, const std::string &input, LIM *lim = nullptr)
             defined = true;
         if (lex.available())
         {
-            const char tc = lex.get();
+            const char tc = clamp_to_default<char>(lex.get(), '?');
             if (!SPACE::is_space(tc) || lex.in_quote())
             {
                 defined = true;
@@ -154,7 +148,6 @@ inline V by_space(const std::string &input, LIM *lim = nullptr)
     by_space_void<V, LEX, SPACE, LIM>(ret, input, lim);
     return ret;
 }
-} // namespace Split
-} // namespace openvpn
+} // namespace openvpn::Split
 
 #endif // OPENVPN_COMMON_SPLIT_H

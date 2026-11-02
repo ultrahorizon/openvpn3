@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // TCP transport object specialized for client.
 
@@ -36,13 +26,12 @@
 #include <openvpn/transport/socket_protect.hpp>
 #include <openvpn/client/remotelist.hpp>
 
-namespace openvpn {
-namespace TCPTransport {
+namespace openvpn::TCPTransport {
 
 class ClientConfig : public TransportClientFactory
 {
   public:
-    typedef RCPtr<ClientConfig> Ptr;
+    using Ptr = RCPtr<ClientConfig>;
 
     RemoteList::Ptr remote_list;
     size_t free_list_max_size;
@@ -83,9 +72,9 @@ class ClientConfig : public TransportClientFactory
 
 class Client : public TransportClient, AsyncResolvableTCP
 {
-    typedef RCPtr<Client> Ptr;
+    using Ptr = RCPtr<Client>;
 
-    typedef Link<openvpn_io::ip::tcp, Client *, false> LinkImpl;
+    using LinkImpl = TCPLink<openvpn_io::ip::tcp, Client *, false>;
 #ifdef OPENVPN_TLS_LINK
     typedef TLSLink<openvpn_io::ip::tcp, Client *, false> LinkImplTLS;
 #endif
@@ -129,8 +118,7 @@ class Client : public TransportClient, AsyncResolvableTCP
     {
         if (impl)
             return impl->send_queue_empty();
-        else
-            return false;
+        return false;
     }
 
     bool transport_has_send_queue() override
@@ -138,12 +126,11 @@ class Client : public TransportClient, AsyncResolvableTCP
         return true;
     }
 
-    unsigned int transport_send_queue_size() override
+    size_t transport_send_queue_size() override
     {
         if (impl)
             return impl->send_queue_size();
-        else
-            return 0;
+        return 0;
     }
 
     void reset_align_adjust(const size_t align_adjust) override
@@ -171,7 +158,7 @@ class Client : public TransportClient, AsyncResolvableTCP
         return server_endpoint.port();
     }
 
-    int native_handle() override
+    openvpn_io::detail::socket_type native_handle() override
     {
         return socket.native_handle();
     }
@@ -219,19 +206,17 @@ class Client : public TransportClient, AsyncResolvableTCP
     {
         if (impl)
         {
-            BufferAllocated buf(cbuf, 0);
+            BufferAllocated buf(cbuf);
             return impl->send(buf);
         }
-        else
-            return false;
+        return false;
     }
 
     bool send(BufferAllocated &buf)
     {
         if (impl)
             return impl->send(buf);
-        else
-            return false;
+        return false;
     }
 
     void tcp_eof_handler() // called by LinkImpl::Base
@@ -339,7 +324,7 @@ class Client : public TransportClient, AsyncResolvableTCP
                     ssl_conf->set_mode(Mode(Mode::CLIENT));
                     ssl_conf->set_local_cert_enabled(false);
                     ssl_conf->set_frame(config->frame);
-                    ssl_conf->set_rng(new SSLLib::RandomAPI(false));
+                    ssl_conf->set_rng(new SSLLib::RandomAPI());
 
                     if (!config->tls_ca.empty())
                     {
@@ -372,7 +357,7 @@ class Client : public TransportClient, AsyncResolvableTCP
                                             config->stats));
 
 #ifdef OPENVPN_GREMLIN
-                impl->gremlin_config(config->gremlin_config);
+                impl->gremlin_config(io_context, config->gremlin_config);
 #endif
                 impl->start();
                 if (!parent->transport_is_openvpn_protocol())
@@ -414,7 +399,6 @@ inline TransportClient::Ptr ClientConfig::new_transport_client_obj(openvpn_io::i
 {
     return TransportClient::Ptr(new Client(io_context, this, parent));
 }
-} // namespace TCPTransport
-} // namespace openvpn
+} // namespace openvpn::TCPTransport
 
 #endif

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Basic file-handling methods.
 
@@ -35,13 +25,11 @@
 #include <openvpn/buffer/bufstr.hpp>
 #include <openvpn/buffer/buflist.hpp>
 
-#if defined(OPENVPN_PLATFORM_WIN)
+#ifdef OPENVPN_PLATFORM_WIN
+#include <filesystem>
 #include <openvpn/win/unicode.hpp>
 #endif
 
-#if __cplusplus >= 201703L
-#include <filesystem>
-#endif
 
 namespace openvpn {
 
@@ -67,18 +55,12 @@ inline std::string read_text_simple(const std::string &filename)
 // Read a file (may be text or binary).
 inline BufferPtr read_binary(const std::string &filename,
                              const std::uint64_t max_size = 0,
-                             const unsigned int buffer_flags = 0)
+                             const BufferFlags buffer_flags = BufAllocFlags::NO_FLAGS)
 {
-#if defined(OPENVPN_PLATFORM_WIN)
+#ifdef OPENVPN_PLATFORM_WIN
     Win::UTF16 filenamew(Win::utf16(filename));
-#if __cplusplus >= 201703L
     std::filesystem::path path(filenamew.get());
     std::ifstream ifs(path, std::ios::binary);
-#elif _MSC_VER
-    std::ifstream ifs(filenamew.get(), std::ios::binary);
-#else
-    std::ifstream ifs(filename.c_str(), std::ios::binary);
-#endif // __cplusplus
 #else
     std::ifstream ifs(filename.c_str(), std::ios::binary);
 #endif // OPENVPN_PLATFORM_WIN
@@ -94,7 +76,7 @@ inline BufferPtr read_binary(const std::string &filename,
     ifs.seekg(0, std::ios::beg);
 
     // allocate buffer
-    BufferPtr b = new BufferAllocated(size_t(length), buffer_flags | BufferAllocated::ARRAY);
+    auto b = BufferAllocatedRc::Create(size_t(length), buffer_flags | BufAllocFlags::ARRAY);
 
     // read data
     ifs.read((char *)b->data(), length);
@@ -122,12 +104,12 @@ inline BufferPtr read_binary_linear(const std::string &filename,
     std::streamsize total_size = 0;
     while (true)
     {
-        BufferPtr b = new BufferAllocated(block_size, 0);
+        auto b = BufferAllocatedRc::Create(block_size);
         ifs.read((char *)b->data(), b->remaining());
         const std::streamsize size = ifs.gcount();
         if (size)
         {
-            b->set_size(size);
+            b->set_size(static_cast<size_t>(size));
             total_size += size;
             if (max_size && std::uint64_t(total_size) > max_size)
                 OPENVPN_THROW(file_too_large, "file too large [" << total_size << '/' << max_size << "]: " << filename);
@@ -144,7 +126,7 @@ inline BufferPtr read_binary_linear(const std::string &filename,
 // Read a text file as a std::string, throw error if file is binary
 inline std::string read_text(const std::string &filename, const std::uint64_t max_size = 0)
 {
-    BufferPtr bp = read_binary(filename, max_size);
+    const BufferPtr bp = read_binary(filename, max_size);
     if (bp->contains_null())
         OPENVPN_THROW(file_is_binary, "file is binary: " << filename);
     return std::string((const char *)bp->c_data(), bp->size());
@@ -153,7 +135,7 @@ inline std::string read_text(const std::string &filename, const std::uint64_t ma
 // Read a UTF-8 file as a std::string, throw errors if file is binary or malformed UTF-8
 inline std::string read_text_utf8(const std::string &filename, const std::uint64_t max_size = 0)
 {
-    BufferPtr bp = read_binary(filename, max_size);
+    const BufferPtr bp = read_binary(filename, max_size);
 
     // check if binary
     if (bp->contains_null())
@@ -216,7 +198,7 @@ inline void write_binary_list(const std::string &filename, const BUFLIST &buflis
 // Write std::string to file
 inline void write_string(const std::string &filename, const std::string &str)
 {
-    BufferPtr buf = buf_from_string(str);
+    const BufferPtr buf = buf_from_string(str);
     write_binary(filename, *buf);
 }
 

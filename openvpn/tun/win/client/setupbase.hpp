@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 //
 
 // Client tun setup base class for Windows
@@ -34,11 +24,11 @@
 #include <openvpn/common/destruct.hpp>
 #include <openvpn/common/stop.hpp>
 #include <openvpn/tun/builder/capture.hpp>
-
+#include <openvpn/tun/client/tunbase.hpp>
 #include <openvpn/tun/win/ringbuffer.hpp>
 
-namespace openvpn {
-namespace TunWin {
+namespace openvpn::TunWin {
+
 struct SetupBase : public DestructorBase
 {
     typedef RCPtr<SetupBase> Ptr;
@@ -74,6 +64,11 @@ struct SetupBase : public DestructorBase
     virtual Util::TapNameGuidPair get_adapter_state() = 0;
 
     virtual void set_adapter_state(const Util::TapNameGuidPair &state) = 0;
+
+    virtual DWORD vpn_interface_index() const
+    {
+        return INVALID_ADAPTER_INDEX;
+    }
 };
 
 struct SetupFactory : public RC<thread_unsafe_refcount>
@@ -86,7 +81,6 @@ struct SetupFactory : public RC<thread_unsafe_refcount>
                                          bool allow_local_dns_resolvers) = 0;
     // clang-format on
 };
-} // namespace TunWin
-} // namespace openvpn
+} // namespace openvpn::TunWin
 
 #endif

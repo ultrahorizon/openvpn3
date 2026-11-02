@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_COMMON_FORMAT_H
 #define OPENVPN_COMMON_FORMAT_H
@@ -278,8 +268,7 @@ class PrintFormatted
                         out.append((char)quote);
                     return true;
                 }
-                else
-                    out.append(c);
+                out.append(c);
             }
             else
             {
@@ -332,7 +321,11 @@ inline std::string printfmt(const std::string &fmt, Args... args)
     return pf.str();
 }
 
+// log with formatting
 #define OPENVPN_FMT(...) OPENVPN_LOG_STRING(printfmt(__VA_ARGS__))
+
+// throw a formatted exception
+#define OPENVPN_THROW_FMT(EXC, ...) throw EXC(printfmt(__VA_ARGS__))
 
 } // namespace openvpn
 

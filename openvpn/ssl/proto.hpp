@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // ProtoContext, the fundamental OpenVPN protocol implementation.
 // It can be used by OpenVPN clients, servers, or unit tests.
@@ -34,6 +24,7 @@
 #include <optional>
 
 
+#include <openvpn/common/clamp_typerange.hpp>
 #include <openvpn/common/exception.hpp>
 #include <openvpn/common/size.hpp>
 #include <openvpn/common/version.hpp>
@@ -47,6 +38,7 @@
 #include <openvpn/common/likely.hpp>
 #include <openvpn/common/string.hpp>
 #include <openvpn/common/to_string.hpp>
+#include <openvpn/common/numeric_cast.hpp>
 #include <openvpn/buffer/buffer.hpp>
 #include <openvpn/buffer/safestr.hpp>
 #include <openvpn/buffer/bufcomposed.hpp>
@@ -64,7 +56,7 @@
 #include <openvpn/crypto/ovpnhmac.hpp>
 #include <openvpn/crypto/tls_crypt.hpp>
 #include <openvpn/crypto/tls_crypt_v2.hpp>
-#include <openvpn/crypto/packet_id.hpp>
+#include <openvpn/crypto/packet_id_control.hpp>
 #include <openvpn/crypto/static_key.hpp>
 #include <openvpn/crypto/bs64_data_limit.hpp>
 #include <openvpn/log/sessionstats.hpp>
@@ -75,27 +67,18 @@
 #include <openvpn/ssl/mssparms.hpp>
 #include <openvpn/transport/mssfix.hpp>
 #include <openvpn/transport/protocol.hpp>
+#include <openvpn/transport/client/transbase.hpp>
 #include <openvpn/tun/layer.hpp>
 #include <openvpn/tun/tunmtu.hpp>
 #include <openvpn/compress/compress.hpp>
 #include <openvpn/ssl/proto_context_options.hpp>
 #include <openvpn/ssl/peerinfo.hpp>
-#include <openvpn/ssl/ssllog.hpp>
 #include <openvpn/crypto/crypto_aead.hpp>
+#include <openvpn/ssl/customcontrolchannel.hpp>
+#include <openvpn/netconf/hwaddr.hpp>
 
-
-#if OPENVPN_DEBUG_PROTO >= 1
-#define OPENVPN_LOG_PROTO(x) OPENVPN_LOG(x)
-#define OPENVPN_LOG_STRING_PROTO(x) OPENVPN_LOG_STRING(x)
-#else
-#define OPENVPN_LOG_PROTO(x)
-#define OPENVPN_LOG_STRING_PROTO(x)
-#endif
-
-#if OPENVPN_DEBUG_PROTO >= 2
-#define OPENVPN_LOG_PROTO_VERBOSE(x) OPENVPN_LOG(x)
-#else
-#define OPENVPN_LOG_PROTO_VERBOSE(x)
+#ifndef OPENVPN_DEBUG_PROTO
+#define OPENVPN_DEBUG_PROTO 1
 #endif
 
 /*
@@ -165,10 +148,72 @@ enum
 } // namespace
 } // namespace proto_context_private
 
-class ProtoContext
+class ProtoContextCallbackInterface
 {
+  public:
+    virtual ~ProtoContextCallbackInterface() = default;
+
+    /**
+     * Sends out bytes to the network.
+     */
+    virtual void control_net_send(const Buffer &net_buf) = 0;
+
+    /*
+     * Receive as packet from the network
+     * \note app may take ownership of app_bp via std::move
+     */
+    virtual void control_recv(BufferPtr &&app_bp) = 0;
+
+    /** Called on client to request username/password credentials.
+     * Should be overridden by derived class if credentials are required.
+     * username and password should be written into buf with write_auth_string().
+     */
+    virtual void client_auth(Buffer &buf)
+    {
+        write_empty_string(buf); // username
+        write_empty_string(buf); // password
+    }
+
+    /** Called on server with credentials and peer info provided by client.
+     *Should be overriden by derived class if credentials are required. */
+    virtual void server_auth(const std::string &username,
+                             const SafeString &password,
+                             const std::string &peer_info,
+                             const AuthCert::Ptr &auth_cert)
+    {
+    }
+
+    /**
+     * Writes an empty user or password string for the key-method 2 packet in the OpenVPN protocol
+     * @param buf  buffer to write to
+     */
+    static void write_empty_string(Buffer &buf)
+    {
+        uint8_t empty[]{0x00, 0x00}; // empty length field without content
+        buf.write(&empty, 2);
+    }
+
+    /** the protocol context needs to know if the parent and its tun/transport layer are able to
+     * support epoch key data format to properly handshake this protocol feature
+     */
+    virtual bool supports_epoch_data() = 0;
+
+    //! Called when KeyContext transitions to ACTIVE state
+    virtual void active(bool primary) = 0;
+};
+
+class ProtoContext : public logging::LoggingMixin<OPENVPN_DEBUG_PROTO,
+                                                  logging::LOG_LEVEL_VERB,
+                                                  ProtoContext>
+{
+#ifdef UNIT_TEST
+  public:
+#else
   protected:
+#endif
     static constexpr size_t APP_MSG_MAX = 65536;
+    // size of the leading opcode/key-id byte of a packet
+    static constexpr size_t OPCODE_SIZE = 1;
 
     enum
     {
@@ -182,6 +227,8 @@ class ProtoContext
         CONTROL_SOFT_RESET_V1 = 3, // new key, graceful transition from old to new key
         CONTROL_V1 = 4,            // control channel packet (usually TLS ciphertext)
         CONTROL_WKC_V1 = 11,       // control channel packet with wrapped client key appended
+        CONTROL_OOB_V1 = 12,       // out-of-band control message (belongs to no session)
+        CONTROL_OOB_WKC_V1 = 13,   // out-of-band control message + wrapped client key appended
         ACK_V1 = 5,                // acknowledgement for packets received
         DATA_V1 = 6,               // data channel packet with 1-byte header
         DATA_V2 = 9,               // data channel packet with 4-byte header
@@ -226,15 +273,22 @@ class ProtoContext
     enum iv_proto_flag : unsigned int
     {
         // See ssl.h in openvpn2 for detailed documentation of IV_PROTO
+        //
+        // NOTE: Bit field (1 << 0) is reserved for historic reasons
+        //       and not expected to be set. Do not use this field.
+        //
         IV_PROTO_DATA_V2 = (1 << 1),
         IV_PROTO_REQUEST_PUSH = (1 << 2),
         IV_PROTO_TLS_KEY_EXPORT = (1 << 3),
         IV_PROTO_AUTH_PENDING_KW = (1 << 4),
-        IV_PROTO_NCP_P2P = (1 << 5), // not implemented
-        IV_PROTO_DNS_OPTION = (1 << 6),
+        IV_PROTO_NCP_P2P = (1 << 5),    // not implemented
+        IV_PROTO_DNS_OPTION = (1 << 6), // outdated, don't send
         IV_PROTO_CC_EXIT_NOTIFY = (1 << 7),
         IV_PROTO_AUTH_FAIL_TEMP = (1 << 8),
         IV_PROTO_DYN_TLS_CRYPT = (1 << 9),
+        IV_PROTO_DATA_EPOCH = (1 << 10),
+        IV_PROTO_DNS_OPTION_V2 = (1 << 11),
+        IV_PROTO_PUSH_UPDATE = (1 << 12)
     };
 
     enum tlv_types : uint16_t
@@ -246,6 +300,13 @@ class ProtoContext
     {
         EARLY_NEG_FLAG_RESEND_WKC = 0x0001
     };
+
+    /** a peer announces EARLY_NEG_START/CONTROL_WKC_V1 support by numbering its
+     *  first sent control packet EARLY_NEG_START instead of 0; EARLY_NEG_MASK
+     *  selects the bits that carry the announcement -- see
+     *  supports_early_negotiation() */
+    static constexpr PacketIDControl::id_t EARLY_NEG_START = 0x0f000000;
+    static constexpr PacketIDControl::id_t EARLY_NEG_MASK = 0xff000000;
 
     static unsigned int opcode_extract(const unsigned int op)
     {
@@ -262,9 +323,11 @@ class ProtoContext
         return opcode_extract(op) == DATA_V2 ? OP_SIZE_V2 : 1;
     }
 
-    static unsigned int op_compose(const unsigned int opcode, const unsigned int key_id)
+    static unsigned char op_compose(const unsigned int opcode, const unsigned int key_id)
     {
-        return (opcode << OPCODE_SHIFT) | key_id;
+        // As long as 'opcode' stays within the range specified by the enum the cast should be safe.
+        // TODO: Use a more constrained type for opcode to ensure range violations can't happen.
+        return static_cast<unsigned char>((opcode << OPCODE_SHIFT) | key_id);
     }
 
     static unsigned int op32_compose(const unsigned int opcode,
@@ -275,15 +338,31 @@ class ProtoContext
     }
 
   public:
-    OPENVPN_EXCEPTION(proto_error);
-    OPENVPN_EXCEPTION(process_server_push_error);
-    OPENVPN_EXCEPTION_INHERIT(option_error, proto_option_error);
+    OPENVPN_UNTAGGED_EXCEPTION_INHERIT(option_error, proto_error);
+    OPENVPN_UNTAGGED_EXCEPTION_INHERIT(option_error, process_server_push_error);
+    OPENVPN_UNTAGGED_EXCEPTION_INHERIT(option_error, proto_option_error);
+
+    // Worst-case number of bytes added around the SSL ciphertext of a
+    // control channel packet: opcode, session id, tls-auth/tls-crypt
+    // packet id, the largest supported HMAC digest (SHA512, tls-auth),
+    // the reliable-layer message id and the largest possible piggybacked
+    // ACK block (count byte + ACK ids + dest session id).  Used to size
+    // the control channel ciphertext chunks such that the final wrapped
+    // packet cannot exceed the mssfix_ctrl limit.
+    static constexpr size_t MAX_CONTROL_WRAP_OVERHEAD =
+        OPCODE_SIZE
+        + ProtoSessionID::SIZE
+        + PacketIDControl::size()
+        + 64 // largest supported HMAC digest (SHA512, tls-auth)
+        + sizeof(reliable::id_t)
+        + 1 + sizeof(reliable::id_t) * ReliableAck::maximum_acks_control_v1
+        + ProtoSessionID::SIZE;
 
     // configuration data passed to ProtoContext constructor
-    class Config : public RCCopyable<thread_unsafe_refcount>
+    class ProtoConfig : public RCCopyable<thread_unsafe_refcount>
     {
       public:
-        typedef RCPtr<Config> Ptr;
+        using Ptr = RCPtr<ProtoConfig>;
 
         // master SSL context factory
         SSLFactoryAPI::Ptr ssl_factory;
@@ -303,7 +382,7 @@ class ProtoContext
         // Random number generator.
         // Use-cases demand highest cryptographic strength
         // such as key generation.
-        RandomAPI::Ptr rng;
+        StrongRandomAPI::Ptr rng;
 
         // Pseudo-random number generator.
         // Use-cases demand cryptographic strength
@@ -341,9 +420,24 @@ class ProtoContext
             V2 = (1 << 1),
             Dynamic = (1 << 2)
         };
-        OpenVPNStaticKey tls_key;             // leave this undefined to disable tls_auth/crypt
-        unsigned tls_crypt_ = TLSCrypt::None; // needed to distinguish between tls-crypt and tls-crypt-v2 server mode
-        BufferAllocated wkc;                  // leave this undefined to disable tls-crypt-v2 on client
+
+        //! leave this undefined to disable tls_auth
+        OpenVPNStaticKey tls_auth_key;
+
+        //! leave this undefined to disable tls-crypt/tls-crypt-v2
+        OpenVPNStaticKey tls_crypt_key;
+
+        //! needed to distinguish between tls-crypt and tls-crypt-v2 server mode
+        unsigned tls_crypt_ = TLSCrypt::None;
+
+        //! do we expect keys to contain a server key ID?
+        bool tls_crypt_v2_serverkey_id = false;
+
+        //! server keys location, if tls_crypt_v2_serverkey_id is true
+        std::string tls_crypt_v2_serverkey_dir;
+
+        //! leave this undefined to disable tls-crypt-v2 on client
+        BufferAllocated wkc;
 
         OvpnHMACFactory::Ptr tls_auth_factory;
         OvpnHMACContext::Ptr tls_auth_context;
@@ -353,9 +447,6 @@ class ProtoContext
         TLSCryptContext::Ptr tls_crypt_context;
 
         TLSCryptMetadataFactory::Ptr tls_crypt_metadata_factory;
-
-        // packet_id parms for both data and control channels
-        int pid_mode = 0; // PacketIDReceive::UDP_MODE or PacketIDReceive::TCP_MODE
 
         // timeout parameters, relative to construction of KeyContext object
         Time::Duration handshake_window; // SSL/TLS negotiation must complete by this time
@@ -369,8 +460,19 @@ class ProtoContext
         Time::Duration keepalive_timeout;       // timeout period after primary KeyContext reaches ACTIVE state
         Time::Duration keepalive_timeout_early; // timeout period before primary KeyContext reaches ACTIVE state
 
-        // extra peer info key/value pairs generated by client app
+        //! extra peer info key/value pairs generated by client app
         PeerInfo::Set::Ptr extra_peer_info;
+
+        // App control config
+        AppControlMessageConfig app_control_config;
+        AppControlMessageReceiver app_control_recv;
+        /** extra peer information that depends on the state of the underlying transport and needs to be initialised
+         * after the transport is initialised but before the IV variables are sent */
+        PeerInfo::Set::Ptr extra_peer_info_transport;
+
+        /** When the extra_peer_info_transport is being built, we need to remember if it should include the more
+         * sensitive information that push-peer-info includes */
+        bool extra_peer_info_push_peerinfo = false;
 
         // op header
         bool enable_op32 = false;
@@ -383,15 +485,19 @@ class ProtoContext
         MSSParms mss_parms;
         unsigned int mss_fix = 0;
 
-        // Debugging
-        int debug_level = 1;
+        // maximum size of a control channel packet on the wire, after all
+        // wrapping (tls-auth/tls-crypt/tls-crypt-v2) has been applied;
+        // 1280 == IPv6 minimum MTU
+        size_t mssfix_ctrl = 1280;
 
         // For compatibility with openvpn2 we send initial options on rekeying,
         // instead of possible modifications caused by NCP
         std::string initial_options;
 
+        bool auth_nocache = false;
+
         void load(const OptionList &opt,
-                  const ProtoContextOptions &pco,
+                  const ProtoContextCompressionOptions &pco,
                   const int default_key_direction,
                   const bool server)
         {
@@ -404,7 +510,6 @@ class ProtoContext
             keepalive_timeout_early = keepalive_timeout;
             comp_ctx = CompressContext(CompressContext::NONE, false);
             protocol = Protocol();
-            pid_mode = PacketIDReceive::UDP_MODE;
             key_direction = default_key_direction;
 
             // layer
@@ -413,14 +518,14 @@ class ProtoContext
                 if (!dev)
                     dev = opt.get_ptr("dev");
                 if (!dev)
-                    throw proto_option_error("missing dev-type or dev option");
+                    throw proto_option_error(ERR_INVALID_CONFIG, "missing dev-type or dev option");
                 const std::string &dev_type = dev->get(1, 64);
-                if (string::starts_with(dev_type, "tun"))
+                if (dev_type.starts_with("tun"))
                     layer = Layer(Layer::OSI_LAYER_3);
-                else if (string::starts_with(dev_type, "tap"))
-                    throw proto_option_error("TAP mode is not supported");
+                else if (dev_type.starts_with("tap"))
+                    throw proto_option_error(ERR_INVALID_CONFIG, "TAP mode is not supported");
                 else
-                    throw proto_option_error("bad dev-type");
+                    throw proto_option_error(ERR_INVALID_OPTION_VAL, "bad dev-type");
             }
 
             // cipher/digest/tls-auth/tls-crypt
@@ -461,10 +566,10 @@ class ProtoContext
                     const Option *o = opt.get_ptr(relay_prefix("tls-auth"));
                     if (o)
                     {
-                        if (tls_crypt_context)
-                            throw proto_option_error("tls-auth and tls-crypt are mutually exclusive");
+                        if (!server && tls_crypt_context)
+                            throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "tls-auth and tls-crypt are mutually exclusive");
 
-                        tls_key.parse(o->get(1, 0));
+                        tls_auth_key.parse(o->get(1, 0));
 
                         const Option *tad = opt.get_ptr(relay_prefix("tls-auth-digest"));
                         if (tad)
@@ -479,13 +584,13 @@ class ProtoContext
                     const Option *o = opt.get_ptr(relay_prefix("tls-crypt"));
                     if (o)
                     {
-                        if (tls_auth_context)
-                            throw proto_option_error("tls-auth and tls-crypt are mutually exclusive");
+                        if (!server && tls_auth_context)
+                            throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "tls-auth and tls-crypt are mutually exclusive");
                         if (tls_crypt_context)
-                            throw proto_option_error("tls-crypt and tls-crypt-v2 are mutually exclusive");
+                            throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "tls-crypt and tls-crypt-v2 are mutually exclusive");
 
                         tls_crypt_ = TLSCrypt::V1;
-                        tls_key.parse(o->get(1, 0));
+                        tls_crypt_key.parse(o->get(1, 0));
 
                         set_tls_crypt_algs();
                     }
@@ -496,10 +601,10 @@ class ProtoContext
                     const Option *o = opt.get_ptr(relay_prefix("tls-crypt-v2"));
                     if (o)
                     {
-                        if (tls_auth_context)
-                            throw proto_option_error("tls-auth and tls-crypt-v2 are mutually exclusive");
+                        if (!server && tls_auth_context)
+                            throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "tls-auth and tls-crypt-v2 are mutually exclusive");
                         if (tls_crypt_context)
-                            throw proto_option_error("tls-crypt and tls-crypt-v2 are mutually exclusive");
+                            throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "tls-crypt and tls-crypt-v2 are mutually exclusive");
 
                         // initialize tls_crypt_context
                         set_tls_crypt_algs();
@@ -511,15 +616,18 @@ class ProtoContext
                             // in client mode expect the key to be a PEM encoded tls-crypt-v2 client key (key + WKc)
                             TLSCryptV2ClientKey tls_crypt_v2_key(tls_crypt_context);
                             tls_crypt_v2_key.parse(keyfile);
-                            tls_crypt_v2_key.extract_key(tls_key);
+                            tls_crypt_v2_key.extract_key(tls_crypt_key);
                             tls_crypt_v2_key.extract_wkc(wkc);
                         }
                         else
                         {
-                            // in server mode this is a PEM encoded tls-crypt-v2 server key
-                            TLSCryptV2ServerKey tls_crypt_v2_key;
-                            tls_crypt_v2_key.parse(keyfile);
-                            tls_crypt_v2_key.extract_key(tls_key);
+                            if (!tls_crypt_v2_serverkey_id)
+                            {
+                                // in server mode this is a PEM encoded tls-crypt-v2 server key
+                                TLSCryptV2ServerKey tls_crypt_v2_key;
+                                tls_crypt_v2_key.parse(keyfile);
+                                tls_crypt_v2_key.extract_key(tls_crypt_key);
+                            }
                         }
                         tls_crypt_ = TLSCrypt::V2;
                     }
@@ -541,11 +649,11 @@ class ProtoContext
                         else if (dir == "bidirectional" || dir == "bi")
                             key_direction = -1;
                         else
-                            throw proto_option_error("bad key-direction parameter");
+                            throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "bad key-direction parameter");
                     }
                 }
                 else
-                    throw proto_option_error("bad key-direction default");
+                    throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "bad key-direction default");
             }
 
             // compression
@@ -558,7 +666,7 @@ class ProtoContext
                         const std::string meth_name = o->get(1, 128);
                         CompressContext::Type meth = CompressContext::parse_method(meth_name);
                         if (meth == CompressContext::NONE)
-                            OPENVPN_THROW(proto_option_error, "Unknown compressor: '" << meth_name << '\'');
+                            OPENVPN_THROW_ARG1(proto_option_error, ERR_INVALID_OPTION_VAL, "Unknown compressor: '" << meth_name << '\'');
                         comp_ctx = CompressContext(pco.is_comp() ? meth : CompressContext::stub(meth), pco.is_comp_asym());
                     }
                     else
@@ -603,73 +711,166 @@ class ProtoContext
                 }
             }
 
+            // mssfix-ctrl: cap on the wrapped size of control channel packets
+            mssfix_ctrl = MSSCtrlParms(opt).mssfix_ctrl;
+
             // load parameters that can be present in both config file or pushed options
             load_common(opt, pco, server ? LOAD_COMMON_SERVER : LOAD_COMMON_CLIENT);
         }
 
+        /**
+         * Fire up the infrastructure needed in order to be able to process dynamic
+         * TLS-crypt renegotiation.
+         */
+        void enable_dynamic_tls_crypt()
+        {
+            set_tls_crypt_algs();
+            tls_crypt_ |= TLSCrypt::Dynamic;
+        }
+
         // load options string pushed by server
-        void process_push(const OptionList &opt, const ProtoContextOptions &pco)
+        void process_push(const OptionList &opt, const ProtoContextCompressionOptions &pco)
         {
             // data channel
-            {
-                // cipher
-                std::string new_cipher;
-                try
-                {
-                    const Option *o = opt.get_ptr("cipher");
-                    if (o)
-                    {
-                        new_cipher = o->get(1, 128);
-                        if (new_cipher != "none")
-                            dc.set_cipher(CryptoAlgs::lookup(new_cipher));
-                    }
-                }
-                catch (const std::exception &e)
-                {
-                    OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed cipher '" << new_cipher << "': " << e.what());
-                }
-
-                // digest
-                std::string new_digest;
-                try
-                {
-                    const Option *o = opt.get_ptr("auth");
-                    if (o)
-                    {
-                        new_digest = o->get(1, 128);
-                        if (new_digest != "none")
-                            dc.set_digest(CryptoAlgs::lookup(new_digest));
-                    }
-                }
-                catch (const std::exception &e)
-                {
-                    OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed digest '" << new_digest << "': " << e.what());
-                }
-
-
-                // tls key-derivation method
-                std::string key_method;
-                try
-                {
-                    const Option *o = opt.get_ptr("key-derivation");
-                    if (o)
-                    {
-                        key_method = o->get(1, 128);
-                        if (key_method == "tls-ekm")
-                            dc.set_key_derivation(CryptoAlgs::KeyDerivation::TLS_EKM);
-                        else
-                            OPENVPN_THROW(process_server_push_error, "Problem accepting key-derivation method '" << key_method << "'");
-                    }
-                    else
-                        dc.set_key_derivation(CryptoAlgs::KeyDerivation::OPENVPN_PRF);
-                }
-                catch (const std::exception &e)
-                {
-                    OPENVPN_THROW(process_server_push_error, "Problem accepting key-derivation method '" << key_method << "': " << e.what());
-                }
-            }
+            parse_pushed_data_channel_options(opt);
 
             // protocol-flags
+            parse_pushed_protocol_flags(opt);
+
+            // compression
+            parse_pushed_compression(opt, pco);
+
+            // peer ID
+            parse_pushed_peer_id(opt);
+
+            // custom app control channel options
+            parse_custom_app_control(opt);
+
+            try
+            {
+                // load parameters that can be present in both config file or pushed options
+                load_common(opt, pco, LOAD_COMMON_CLIENT_PUSHED);
+            }
+            catch (const std::exception &e)
+            {
+                OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed parameter: " << e.what());
+            }
+
+            // show negotiated options
+            OVPN_LOG_INFO(show_options());
+        }
+
+        void parse_custom_app_control(const OptionList &opt)
+        {
+            try
+            {
+                const Option *o = opt.get_ptr("custom-control");
+                if (o)
+                {
+                    app_control_config.max_msg_size = o->get_num(1, 1, std::numeric_limits<int>::max());
+                    const auto &flags = o->get(2, 1024);
+                    const auto &protocols = o->get(3, 1024);
+                    app_control_config.parse_flags(flags);
+
+                    app_control_config.supported_protocols = string::split(protocols, ':');
+
+                    /* This implementation always wants to have at least both base64 and text encoding */
+                    if (!app_control_config.encoding_text)
+                    {
+                        OPENVPN_LOG("Warning: custom app control requires base64 encoding to properly work");
+                    }
+                }
+            }
+            catch (const std::exception &e)
+            {
+                app_control_config = {};
+                OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed parameter: " << e.what());
+            }
+        }
+
+        void parse_pushed_data_channel_options(const OptionList &opt)
+        {
+            // cipher
+            std::string new_cipher;
+            try
+            {
+                const Option *o = opt.get_ptr("cipher");
+                if (o)
+                {
+                    new_cipher = o->get(1, 128);
+                    if (new_cipher != "none")
+                        dc.set_cipher(CryptoAlgs::lookup(new_cipher));
+                }
+            }
+            catch (const std::exception &e)
+            {
+                OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed cipher '" << new_cipher << "': " << e.what());
+            }
+
+            // digest
+            std::string new_digest;
+            try
+            {
+                const Option *o = opt.get_ptr("auth");
+                if (o)
+                {
+                    new_digest = o->get(1, 128);
+                    if (new_digest != "none")
+                        dc.set_digest(CryptoAlgs::lookup(new_digest));
+                }
+            }
+            catch (const std::exception &e)
+            {
+                OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed digest '" << new_digest << "': " << e.what());
+            }
+        }
+
+        void parse_pushed_peer_id(const OptionList &opt)
+        {
+            try
+            {
+                const Option *o = opt.get_ptr("peer-id");
+                if (o)
+                {
+                    bool status = parse_number_validate<int>(o->get(1, 16),
+                                                             16,
+                                                             -1,
+                                                             0xFFFFFE,
+                                                             &remote_peer_id);
+                    if (!status)
+                        throw Exception("parse/range issue");
+                    enable_op32 = true;
+                }
+            }
+            catch (const std::exception &e)
+            {
+                OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed peer-id: " << e.what());
+            }
+        }
+
+        void parse_pushed_protocol_flags(const OptionList &opt)
+        {
+            // tls key-derivation method with old key-derivation option
+            std::string key_method;
+            try
+            {
+                const Option *o = opt.get_ptr("key-derivation");
+                if (o)
+                {
+                    key_method = o->get(1, 128);
+                    if (key_method == "tls-ekm")
+                        dc.set_key_derivation(CryptoAlgs::KeyDerivation::TLS_EKM);
+                    else
+                        OPENVPN_THROW(process_server_push_error, "Problem accepting key-derivation method '" << key_method << "'");
+                }
+                else
+                    dc.set_key_derivation(CryptoAlgs::KeyDerivation::OPENVPN_PRF);
+            }
+            catch (const std::exception &e)
+            {
+                OPENVPN_THROW(process_server_push_error, "Problem accepting key-derivation method '" << key_method << "': " << e.what());
+            }
+
             try
             {
                 const Option *o = opt.get_ptr("protocol-flags");
@@ -685,13 +886,16 @@ class ProtoContext
                         }
                         else if (flag == "dyn-tls-crypt")
                         {
-                            set_tls_crypt_algs();
-                            tls_crypt_ |= TLSCrypt::Dynamic;
+                            enable_dynamic_tls_crypt();
                         }
                         else if (flag == "tls-ekm")
                         {
                             // Overrides "key-derivation" method set above
                             dc.set_key_derivation(CryptoAlgs::KeyDerivation::TLS_EKM);
+                        }
+                        else if (flag == "aead-epoch")
+                        {
+                            dc.set_use_epoch_keys(true);
                         }
                         else
                         {
@@ -704,8 +908,10 @@ class ProtoContext
             {
                 OPENVPN_THROW(process_server_push_error, "Problem accepting protocol-flags: " << e.what());
             }
+        }
 
-            // compression
+        void parse_pushed_compression(const OptionList &opt, const ProtoContextCompressionOptions &pco)
+        {
             std::string new_comp;
             try
             {
@@ -754,85 +960,66 @@ class ProtoContext
             {
                 OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed compressor '" << new_comp << "': " << e.what());
             }
+        }
 
-            // peer ID
-            try
-            {
-                const Option *o = opt.get_ptr("peer-id");
-                if (o)
-                {
-                    bool status = parse_number_validate<int>(o->get(1, 16),
-                                                             16,
-                                                             -1,
-                                                             0xFFFFFE,
-                                                             &remote_peer_id);
-                    if (!status)
-                        throw Exception("parse/range issue");
-                    enable_op32 = true;
-                }
-            }
-            catch (const std::exception &e)
-            {
-                OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed peer-id: " << e.what());
-            }
+        void get_data_channel_options(std::ostringstream &os) const
+        {
+            os << "  data channel:";
+            os << " cipher " << CryptoAlgs::name(dc.cipher());
+            if (CryptoAlgs::mode(dc.cipher()) != CryptoAlgs::Mode::AEAD)
+                os << ", digest " << CryptoAlgs::name(dc.digest());
 
-            try
-            {
-                // load parameters that can be present in both config file or pushed options
-                load_common(opt, pco, LOAD_COMMON_CLIENT_PUSHED);
-            }
-            catch (const std::exception &e)
-            {
-                OPENVPN_THROW(process_server_push_error, "Problem accepting server-pushed parameter: " << e.what());
-            }
+            os << ", peer-id " << remote_peer_id;
 
-            // show negotiated options
-            OPENVPN_LOG_STRING_PROTO(show_options());
+            if (dc.useEpochKeys())
+                os << ", aead-epoch";
+
+            os << '\n';
+        }
+
+        void show_cc_enc_option(std::ostringstream &os) const
+        {
+            if (tls_auth_enabled())
+            {
+                os << "  control channel: tls-auth enabled\n";
+            }
+            if (tls_crypt_v2_enabled())
+            {
+                os << "  control channel: tls-crypt v2 enabled\n";
+            }
+            else if (tls_crypt_enabled())
+            {
+                os << "  control channel: tls-crypt enabled\n";
+            }
+            else if (dynamic_tls_crypt_enabled())
+            {
+                os << "  control channel: dynamic tls-crypt enabled\n";
+            }
         }
 
         std::string show_options() const
         {
             std::ostringstream os;
-            os << "PROTOCOL OPTIONS:" << std::endl;
-            os << "  cipher: " << CryptoAlgs::name(dc.cipher()) << std::endl;
-            os << "  digest: " << CryptoAlgs::name(dc.digest()) << std::endl;
-            os << "  key-derivation: " << CryptoAlgs::name(dc.key_derivation()) << std::endl;
-            os << "  compress: " << comp_ctx.str() << std::endl;
-            os << "  peer ID: " << remote_peer_id << std::endl;
-            if (tls_auth_enabled())
-            {
-                os << "  control channel: tls-auth enabled" << std::endl;
-            }
-            if (tls_crypt_v2_enabled())
-            {
-                os << "  control channel: tls-crypt v2 enabled" << std::endl;
-            }
-            else if (tls_crypt_enabled())
-            {
-                os << "  control channel: tls-crypt enabled" << std::endl;
-            }
-            else if (dynamic_tls_crypt_enabled())
-            {
-                os << "  control channel: dynamic tls-crypt enabled" << std::endl;
-            }
-            return os.str();
-        }
+            os << "PROTOCOL OPTIONS:\n";
+            os << "  key-derivation: " << CryptoAlgs::name(dc.key_derivation()) << '\n';
+            if (comp_ctx.type() != CompressContext::NONE)
+                os << "  compress: " << comp_ctx.str() << '\n';
 
-        void set_pid_mode(const bool tcp_linear)
-        {
-            if (protocol.is_udp() || !tcp_linear)
-                pid_mode = PacketIDReceive::UDP_MODE;
-            else if (protocol.is_tcp())
-                pid_mode = PacketIDReceive::TCP_MODE;
-            else
-                throw proto_option_error("transport protocol undefined");
+            show_cc_enc_option(os);
+            get_data_channel_options(os);
+
+            if (!app_control_config.supported_protocols.empty())
+            {
+                os << "  app custom control channel: " << app_control_config.str() << '\n';
+            }
+
+            return os.str();
         }
 
         void set_protocol(const Protocol &p)
         {
             // adjust options for new transport protocol
             protocol = p;
-            set_pid_mode(false);
         }
 
         void set_tls_auth_digest(const CryptoAlgs::Type digest)
@@ -849,7 +1036,7 @@ class ProtoContext
             auto cipher = CryptoAlgs::lookup("AES-256-CTR");
 
             if ((digest == CryptoAlgs::NONE) || (cipher == CryptoAlgs::NONE))
-                throw proto_option_error("missing support for tls-crypt algorithms");
+                throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "missing support for tls-crypt algorithms");
 
             /* TODO: we currently use the default SSL library context here as the
              * library context is not available this early. This should not matter
@@ -864,17 +1051,17 @@ class ProtoContext
 
         bool tls_auth_enabled() const
         {
-            return tls_key.defined() && tls_auth_context;
+            return tls_auth_key.defined() && tls_auth_context;
         }
 
         bool tls_crypt_enabled() const
         {
-            return tls_key.defined() && (tls_crypt_ & TLSCrypt::V1);
+            return tls_crypt_key.defined() && (tls_crypt_ & TLSCrypt::V1);
         }
 
         bool tls_crypt_v2_enabled() const
         {
-            return tls_key.defined() && (tls_crypt_ & TLSCrypt::V2);
+            return (tls_crypt_key.defined() || tls_crypt_v2_serverkey_id) && (tls_crypt_ & TLSCrypt::V2);
         }
 
         bool dynamic_tls_crypt_enabled() const
@@ -934,21 +1121,44 @@ class ProtoContext
             return initial_options;
         }
 
+        /**
+         * This method adds the parts of the peer info string that depend on the state of the
+         * connection, especially the remote that we are connecting to.
+         */
+        void build_connect_time_peer_info_string(TransportClient::Ptr transport)
+        {
+            extra_peer_info_transport.reset(new PeerInfo::Set{});
+            if (extra_peer_info_push_peerinfo)
+            {
+                /* check if the IV_HWADDR is already present in the extra_peer_info set as it has then been
+                 * statically been overridden */
+                if (!extra_peer_info->contains_key("IV_HWADDR"))
+                {
+                    std::string hwaddr = get_hwaddr(transport->server_endpoint_addr());
+                    if (!hwaddr.empty())
+                        extra_peer_info_transport->emplace_back("IV_HWADDR", hwaddr);
+                }
+            }
+        }
+
         // generate a string summarizing information about the client
         // including capabilities
-        std::string peer_info_string() const
+        std::string peer_info_string(bool supports_epoch_data) const
         {
             std::ostringstream out;
             const char *compstr = nullptr;
 
             // supports op32 and P_DATA_V2 and expects a push reply
-
             unsigned int iv_proto = IV_PROTO_DATA_V2
                                     | IV_PROTO_REQUEST_PUSH
                                     | IV_PROTO_AUTH_PENDING_KW
-                                    | IV_PROTO_DNS_OPTION
+                                    | IV_PROTO_DNS_OPTION_V2
                                     | IV_PROTO_CC_EXIT_NOTIFY
-                                    | IV_PROTO_AUTH_FAIL_TEMP;
+                                    | IV_PROTO_AUTH_FAIL_TEMP
+                                    | IV_PROTO_PUSH_UPDATE;
+
+            if (supports_epoch_data)
+                iv_proto |= IV_PROTO_DATA_EPOCH;
 
             if (CryptoAlgs::lookup("SHA256") != CryptoAlgs::NONE && CryptoAlgs::lookup("AES-256-CTR") != CryptoAlgs::NONE)
                 iv_proto |= IV_PROTO_DYN_TLS_CRYPT;
@@ -962,8 +1172,8 @@ class ProtoContext
             out << "IV_PLAT=" << platform_name() << '\n';
             out << "IV_NCP=2\n";   // negotiable crypto parameters V2
             out << "IV_TCPNL=1\n"; // supports TCP non-linear packet ID
-            out << "IV_PROTO=" << std::to_string(iv_proto) << '\n';
-            out << "IV_MTU=" << std::to_string(tun_mtu_max) << "\n";
+            out << "IV_PROTO=" << iv_proto << '\n';
+            out << "IV_MTU=" << tun_mtu_max << "\n";
             /*
              * OpenVPN3 allows to be pushed any cipher that it supports as it
              * only implements secure ones and BF-CBC for backwards
@@ -978,10 +1188,10 @@ class ProtoContext
             CryptoAlgs::for_each(
                 [&out](CryptoAlgs::Type type, const CryptoAlgs::Alg &alg) -> bool
                 {
-                if (!CryptoAlgs::defined(type) || !alg.dc_cipher())
-                    return false;
-                out << alg.name() << ':';
-                return true;
+                    if (!alg.dc_cipher())
+                        return false;
+                    out << alg.name() << ':';
+                    return true;
                 });
             out.seekp(-1, std::ios_base::cur);
             out << "\n";
@@ -992,13 +1202,17 @@ class ProtoContext
                 out << compstr;
             if (extra_peer_info)
                 out << extra_peer_info->to_string();
+            if (extra_peer_info_transport)
+                out << extra_peer_info_transport->to_string();
             if (is_bs64_cipher(dc.cipher()))
                 out << "IV_BS64DL=1\n"; // indicate support for data limits when using 64-bit block-size ciphers, version 1 (CVE-2016-6329)
             if (relay_mode)
                 out << "IV_RELAY=1\n";
+
+
             const std::string ret = out.str();
-            OPENVPN_LOG_PROTO("Sending Peer Info:" << std::endl
-                                                   << ret);
+            OVPN_LOG_INFO("Sending Peer Info:\n"
+                          << ret);
             return ret;
         }
 
@@ -1019,11 +1233,11 @@ class ProtoContext
             {
                 dc_overhead = dc.context().encap_overhead();
             }
-            const size_t adj = protocol.extra_transport_bytes() +     // extra 2 bytes for TCP-streamed packet length
-                               (enable_op32 ? 4 : 1) +                // leading op
-                               comp_ctx.extra_payload_bytes() +       // compression header
-                               PacketID::size(PacketID::SHORT_FORM) + // sequence number
-                               dc_overhead;                           // data channel crypto layer overhead
+            const size_t adj = protocol.extra_transport_bytes() + // extra 2 bytes for TCP-streamed packet length
+                               (enable_op32 ? 4 : 1) +            // leading op
+                               comp_ctx.extra_payload_bytes() +   // compression header
+                               PacketIDData::size(false) +        // sequence number
+                               dc_overhead;                       // data channel crypto layer overhead
             return (unsigned int)adj;
         }
 
@@ -1037,7 +1251,7 @@ class ProtoContext
 
         // load parameters that can be present in both config file or pushed options
         void load_common(const OptionList &opt,
-                         const ProtoContextOptions &pco,
+                         const ProtoContextCompressionOptions &pco,
                          const LoadCommonType type)
         {
             // duration parms
@@ -1078,6 +1292,11 @@ class ProtoContext
                     load_duration_parm(keepalive_ping, "ping", opt, 1, false, false);
                     load_duration_parm(keepalive_timeout, "ping-restart", opt, 1, false, false);
                 }
+            }
+
+            if ((type == LOAD_COMMON_CLIENT) || (type == LOAD_COMMON_CLIENT_PUSHED))
+            {
+                auth_nocache = opt.exists("auth-nocache");
             }
         }
 
@@ -1153,7 +1372,10 @@ class ProtoContext
                         {
                             if (unlikely(buf.size() < 4))
                                 return;
-                            const int opi = ntohl(*(const std::uint32_t *)buf.c_data()) & 0x00FFFFFF;
+                            std::uint32_t opi;
+                            // avoid unaligned access
+                            std::memcpy(&opi, buf.c_data(), sizeof(opi));
+                            opi = ntohl(opi) & 0x00FFFFFF;
                             if (opi != OP_PEER_ID_UNDEF)
                                 peer_id_ = opi;
                             opcode = opc;
@@ -1174,10 +1396,11 @@ class ProtoContext
                             break;
                         }
                     case CONTROL_HARD_RESET_SERVER_V2:
+                        if (proto.is_server())
+                            return;
+                        [[fallthrough]];
                     case CONTROL_WKC_V1:
                         {
-                            if (proto.is_server())
-                                return;
                             flags |= CONTROL;
                             opcode = opc;
                             break;
@@ -1269,8 +1492,8 @@ class ProtoContext
 
                 if (tls_wrap_mode == TLS_CRYPT || tls_wrap_mode == TLS_CRYPT_V2)
                 {
-                    PacketID pid;
-                    pid.read(b, PacketID::LONG_FORM);
+                    PacketIDControl pid;
+                    pid.read(b);
                     out << " PID=" << pid.str();
 
                     const unsigned char *hmac = b.read_alloc(hmac_size);
@@ -1284,8 +1507,8 @@ class ProtoContext
                         const unsigned char *hmac = b.read_alloc(hmac_size);
                         out << " HMAC=" << render_hex(hmac, hmac_size);
 
-                        PacketID pid;
-                        pid.read(b, PacketID::LONG_FORM);
+                        PacketIDControl pid;
+                        pid.read(b);
                         out << " PID=" << pid.str();
                     }
 
@@ -1324,27 +1547,25 @@ class ProtoContext
         return out.str();
     }
 
-  protected:
-    // used for reading/writing authentication strings (username, password, etc.)
-
+    // used for reading/writing authentication strings (username, password, etc.) from buffer using the
+    //  2 byte prefix for length
     static void write_uint16_length(const size_t size, Buffer &buf)
     {
         if (size > 0xFFFF)
             throw proto_error("auth_string_overflow");
-        const std::uint16_t net_size = htons(size);
+        const std::uint16_t net_size = htons(static_cast<std::uint16_t>(size));
         buf.write((const unsigned char *)&net_size, sizeof(net_size));
     }
 
-    static size_t read_uint16_length(Buffer &buf)
+    static uint16_t read_uint16_length(Buffer &buf)
     {
-        if (buf.size())
+        if (!buf.empty())
         {
             std::uint16_t net_size;
             buf.read((unsigned char *)&net_size, sizeof(net_size));
             return ntohs(net_size);
         }
-        else
-            return 0;
+        return 0;
     }
 
     template <typename S>
@@ -1382,38 +1603,39 @@ class ProtoContext
         buf.null_terminate();
     }
 
+    static void write_empty_string(Buffer &buf)
+    {
+        write_uint16_length(0, buf);
+    }
+
     template <typename S>
     static S read_control_string(const Buffer &buf)
     {
         size_t size = buf.size();
         if (size)
         {
-            if (buf[size - 1] == 0)
+            /* Trim any trailing \n or \r or 0x00 characters. Scripts plugin sometimes accidentally include a \n or \r\n in AUTH_FAILED
+             * or similar messages */
+            while (size > 0 && (buf[size - 1] == 0 || buf[size - 1] == '\r' || buf[size - 1] == '\n'))
+            {
                 --size;
+            }
+
             if (size)
-                return S((const char *)buf.c_data(), size);
+            {
+                return S{reinterpret_cast<const char *>(buf.c_data()), size};
+            }
         }
-        return S();
+        return {};
     }
 
     template <typename S>
     void write_control_string(const S &str)
     {
         const size_t len = str.length();
-        BufferPtr bp = new BufferAllocated(len + 1, 0);
+        auto bp = BufferAllocatedRc::Create(len + 1);
         write_control_string(str, *bp);
         control_send(std::move(bp));
-    }
-
-    static unsigned char *skip_string(Buffer &buf)
-    {
-        const size_t len = read_uint16_length(buf);
-        return buf.read_alloc(len);
-    }
-
-    static void write_empty_string(Buffer &buf)
-    {
-        write_uint16_length(0, buf);
     }
 
     // Packet structure for managing network packets, passed as a template
@@ -1438,7 +1660,7 @@ class ProtoContext
         {
             Packet pkt;
             pkt.opcode = opcode;
-            pkt.buf.reset(new BufferAllocated(*buf));
+            pkt.buf = BufferAllocatedRc::Create(*buf);
             return pkt;
         }
 
@@ -1451,7 +1673,7 @@ class ProtoContext
         void frame_prepare(const Frame &frame, const unsigned int context)
         {
             if (!buf)
-                buf.reset(new BufferAllocated());
+                buf = BufferAllocatedRc::Create();
             frame.prepare(context, *buf);
         }
 
@@ -1486,14 +1708,428 @@ class ProtoContext
         BufferPtr buf;
     };
 
+    // ---- standalone control-channel wrapping -----------------------------------
+    // The framing/protection of an outgoing control packet, factored out of
+    // KeyContext so it can also wrap packets that belong to no established session
+    // (e.g. an out-of-band SERVER_PROBE). These are pure functions of the crypto
+    // context + the caller's session id / packet-id / key-id; KeyContext::gen_head_*
+    // delegate here with their own state, so on-wire behaviour is unchanged.
+
+    /**
+     * @brief Does a packet with this opcode carry a WKc?
+     *
+     * On a server such a packet is what keys the session, so it cannot be validated
+     * with a key yet.
+     */
+    static bool opcode_carries_wkc(const unsigned int opcode)
+    {
+        return opcode == CONTROL_HARD_RESET_CLIENT_V3 || opcode == CONTROL_WKC_V1;
+    }
+
+    //! tls-auth: [op][psid][hmac][pid][payload]
+    static void wrap_tls_auth(const unsigned int opcode,
+                              Buffer &buf,
+                              PacketIDControlSend &pid_send,
+                              const PacketIDControl::time_t now_secs,
+                              const size_t hmac_size,
+                              const ProtoSessionID &psid_self,
+                              const unsigned int key_id,
+                              OvpnHMACInstance &ta_hmac_send)
+    {
+        pid_send.write_next(buf, true, now_secs);
+        buf.prepend_alloc(hmac_size);
+        psid_self.prepend(buf);
+        buf.push_front(op_compose(opcode, key_id));
+        ta_hmac_send.ovpn_hmac_gen(buf.data(),
+                                   buf.size(),
+                                   OPCODE_SIZE + ProtoSessionID::SIZE,
+                                   hmac_size,
+                                   PacketIDControl::size());
+    }
+
+    /**
+     * tls-crypt / tls-crypt-v2: [op][psid][pid][hmac][encrypted payload](+WKc). The
+     * plaintext payload is in @p buf; @p work is scratch. Pass @p wkc (the wrapped
+     * client key) non-null for tls-crypt-v2 so it is appended on the WKc-bearing
+     * opcodes; pass nullptr otherwise.
+     */
+    static void wrap_tls_crypt(const unsigned int opcode,
+                               BufferAllocated &buf,
+                               BufferAllocated &work,
+                               Frame &frame,
+                               PacketIDControlSend &pid_send,
+                               const PacketIDControl::time_t now_secs,
+                               const size_t hmac_size,
+                               const ProtoSessionID &psid_self,
+                               const unsigned int key_id,
+                               TLSCryptInstance &tls_crypt_send,
+                               const Buffer *wkc)
+    {
+        // header fields that are not encrypted go into 'work'
+        frame.prepare(Frame::ENCRYPT_WORK, work);
+        work.prepend_alloc(hmac_size);
+        pid_send.write_next(work, true, now_secs);
+        psid_self.prepend(work);
+        work.push_front(op_compose(opcode, key_id));
+
+        // HMAC over header fields (from 'work') and plaintext payload (from 'buf')
+        tls_crypt_send.hmac_gen(work.data(), TLSCryptContext::hmac_offset, buf.c_data(), buf.size());
+
+        const size_t data_offset = TLSCryptContext::hmac_offset + hmac_size;
+        const size_t encrypt_bytes = tls_crypt_send.encrypt(work.c_data() + TLSCryptContext::hmac_offset,
+                                                            work.data() + data_offset,
+                                                            work.max_size() - data_offset,
+                                                            buf.c_data(),
+                                                            buf.size());
+        if (!encrypt_bytes)
+        {
+            buf.reset_size();
+            return;
+        }
+        work.inc_size(encrypt_bytes);
+
+        // append the WKc: opcode_carries_wkc() covers the in-session handshake
+        // packets, and an OOB probe carries one too (it has no session to key)
+        if ((opcode_carries_wkc(opcode) || opcode == CONTROL_OOB_WKC_V1) && wkc)
+        {
+            if (!wkc->defined())
+                throw proto_error("Client Key Wrapper undefined");
+            work.append(*wkc);
+        }
+
+        // 'work' now holds the complete packet; swap it into 'buf'
+        buf.swap(work);
+    }
+
+    //! plaintext control channel: [op][psid][payload]
+    static void wrap_tls_plain(const unsigned int opcode,
+                               Buffer &buf,
+                               const ProtoSessionID &psid_self,
+                               const unsigned int key_id)
+    {
+        psid_self.prepend(buf);
+        buf.push_front(op_compose(opcode, key_id));
+    }
+
+    // Result of the crypto/framing half of decapsulating a control packet. The
+    // caller maps the error cases to stats/invalidate and OK to further session
+    // processing; DROP is a silent, non-error discard (malformed/too-short).
+    enum class UnwrapStatus
+    {
+        OK,
+        DROP,
+        HMAC_ERROR,
+        DECRYPT_ERROR,
+    };
+
+    /**
+     * tls-auth: verify the HMAC, extract the source PSID and packet id, and leave
+     * @p recv positioned at the (authenticated) payload. Counterpart of
+     * wrap_tls_auth(); usable without a session (e.g. an OOB probe reply).
+     */
+    static UnwrapStatus unwrap_tls_auth(Buffer &recv,
+                                        const size_t hmac_size,
+                                        OvpnHMACInstance &ta_hmac_recv,
+                                        const PacketIDControlReceive &pid_recv,
+                                        ProtoSessionID &src_psid,
+                                        PacketIDControl &pid)
+    {
+        const unsigned char *orig_data = recv.data();
+        const size_t orig_size = recv.size();
+
+        recv.advance(1); // past initial op byte
+        src_psid.read(recv);
+        recv.advance(hmac_size);
+        if (!ta_hmac_recv.ovpn_hmac_cmp(orig_data,
+                                        orig_size,
+                                        OPCODE_SIZE + ProtoSessionID::SIZE,
+                                        hmac_size,
+                                        PacketIDControl::size()))
+            return UnwrapStatus::HMAC_ERROR;
+
+        pid = pid_recv.read_next(recv);
+        return UnwrapStatus::OK;
+    }
+
+    /**
+     * tls-crypt / tls-crypt-v2: extract source PSID + packet id, decrypt the
+     * payload into @p work, verify the HMAC, and swap the plaintext into @p recv.
+     * Counterpart of wrap_tls_crypt(); usable without a session.
+     */
+    static UnwrapStatus unwrap_tls_crypt(BufferAllocated &recv,
+                                         BufferAllocated &work,
+                                         Frame &frame,
+                                         const size_t hmac_size,
+                                         TLSCryptInstance &tls_crypt_recv,
+                                         const PacketIDControlReceive &pid_recv,
+                                         ProtoSessionID &src_psid,
+                                         PacketIDControl &pid)
+    {
+        const unsigned char *orig_data = recv.data();
+        const size_t orig_size = recv.size();
+
+        recv.advance(1); // past initial op byte
+        src_psid.read(recv);
+        pid = pid_recv.read_next(recv);
+        recv.advance(hmac_size); // skip the hmac
+
+        const size_t data_offset = TLSCryptContext::hmac_offset + hmac_size;
+        if (orig_size < data_offset)
+            return UnwrapStatus::DROP;
+
+        frame.prepare(Frame::DECRYPT_WORK, work);
+        const size_t decrypt_bytes = tls_crypt_recv.decrypt(orig_data + TLSCryptContext::hmac_offset,
+                                                            work.data(),
+                                                            work.max_size(),
+                                                            recv.c_data(),
+                                                            recv.size());
+        if (!decrypt_bytes)
+            return UnwrapStatus::DECRYPT_ERROR;
+        work.inc_size(decrypt_bytes);
+
+        if (!tls_crypt_recv.hmac_cmp(orig_data, TLSCryptContext::hmac_offset, work.c_data(), work.size()))
+            return UnwrapStatus::HMAC_ERROR;
+
+        // plaintext is now in 'work'; swap it into 'recv' for further processing
+        recv.swap(work);
+        return UnwrapStatus::OK;
+    }
+
+    // ---- standalone construction of the control-channel protection contexts -----
+    // The crypto instances a control packet is wrapped/unwrapped with, factored out
+    // of reset()/reset_tls_crypt() so they can be built directly from a ProtoConfig
+    // for a packet that belongs to no session (e.g. an out-of-band probe). Behaviour
+    // is identical to the in-session setup; the session path delegates here.
+
+    /**
+     * tls-auth: build the send + recv HMAC instances. Direction follows the
+     * configured key-direction (not the client/server role), as in reset().
+     */
+    static void build_tls_auth(const ProtoConfig &c,
+                               OvpnHMACInstance::Ptr &send,
+                               OvpnHMACInstance::Ptr &recv)
+    {
+        send = c.tls_auth_context->new_obj();
+        recv = c.tls_auth_context->new_obj();
+        if (c.key_direction >= 0)
+        {
+            // key-direction is 0 or 1
+            const unsigned int key_dir = c.key_direction ? OpenVPNStaticKey::INVERSE : OpenVPNStaticKey::NORMAL;
+            send->init(c.tls_auth_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::ENCRYPT | key_dir));
+            recv->init(c.tls_auth_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir));
+        }
+        else
+        {
+            // key-direction bidirectional mode
+            send->init(c.tls_auth_key.slice(OpenVPNStaticKey::HMAC));
+            recv->init(c.tls_auth_key.slice(OpenVPNStaticKey::HMAC));
+        }
+    }
+
+    /**
+     * tls-crypt / tls-crypt-v2: build the send + recv instances from @p key. The
+     * encrypt/decrypt slices are selected by the caller's role (@p server).
+     */
+    static void build_tls_crypt(const ProtoConfig &c,
+                                const bool server,
+                                const OpenVPNStaticKey &key,
+                                TLSCryptInstance::Ptr &send,
+                                TLSCryptInstance::Ptr &recv)
+    {
+        send = c.tls_crypt_context->new_obj_send();
+        recv = c.tls_crypt_context->new_obj_recv();
+
+        // static direction assignment - not user configurable
+        const unsigned int key_dir = server ? OpenVPNStaticKey::NORMAL : OpenVPNStaticKey::INVERSE;
+
+        send->init(c.ssl_factory->libctx(),
+                   key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::ENCRYPT | key_dir),
+                   key.slice(OpenVPNStaticKey::CIPHER | OpenVPNStaticKey::ENCRYPT | key_dir));
+        recv->init(c.ssl_factory->libctx(),
+                   key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir),
+                   key.slice(OpenVPNStaticKey::CIPHER | OpenVPNStaticKey::DECRYPT | key_dir));
+    }
+
+  private:
+    // TLS wrapping mode for the control channel
+    enum TLSWrapMode
+    {
+        TLS_PLAIN,
+        TLS_AUTH,
+        TLS_CRYPT,
+        TLS_CRYPT_V2
+    };
+
+    //! A control-channel wrap mode paired with its hmac size.
+    struct TLSWrapSelection
+    {
+        TLSWrapMode mode;
+        size_t hmac_size;
+    };
+
+    //! Wrap mode implied by @p c, preferring tls-auth when it is enabled
+    //! alongside tls-crypt or tls-crypt-v2.
+    static TLSWrapSelection select_tls_wrap(const ProtoConfig &c)
+    {
+        if (c.tls_crypt_v2_enabled() && !c.tls_auth_enabled())
+            return {.mode = TLS_CRYPT_V2, .hmac_size = c.tls_crypt_context->digest_size()};
+        if (c.tls_crypt_enabled() && !c.tls_auth_enabled())
+            return {.mode = TLS_CRYPT, .hmac_size = c.tls_crypt_context->digest_size()};
+        if (c.tls_auth_enabled())
+            return {.mode = TLS_AUTH, .hmac_size = c.tls_auth_context->size()};
+        return {.mode = TLS_PLAIN, .hmac_size = 0};
+    }
+
+  public:
+    /**
+     * @brief Wrap an out-of-band SERVER_PROBE / unwrap the matching PROBE_REPLY.
+     *
+     * Applies whichever control-channel protection is configured (tls-auth,
+     * tls-crypt, tls-crypt-v2 or plaintext), built directly from a ProtoConfig --
+     * no session exists yet. The on-wire framing is identical to an in-session
+     * control packet (the wrap_ / unwrap_ helpers), so a standard server accepts
+     * it. The probe is always sent by the client; for tls-crypt-v2 the wrapped
+     * client key (WKc) is appended (opcode CONTROL_OOB_WKC_V1) so a stateless
+     * server can derive the session key and unwrap the probe.
+     */
+    class ProbeWrap
+    {
+      public:
+        //! Pick the wrap mode from @p config_arg and build the crypto contexts for it.
+        ProbeWrap(const ProtoConfig::Ptr &config_arg, const SessionStats::Ptr &stats)
+            : config(config_arg)
+        {
+            const ProtoConfig &c = *config;
+
+            const TLSWrapSelection sel = select_tls_wrap(c);
+            mode = sel.mode;
+            hmac_size = sel.hmac_size;
+
+            switch (mode)
+            {
+            case TLS_AUTH:
+                build_tls_auth(c, ta_hmac_send, ta_hmac_recv);
+                break;
+            case TLS_CRYPT:
+            case TLS_CRYPT_V2:
+                // the probe is sent by the client, so build with the client role
+                build_tls_crypt(c, false, c.tls_crypt_key, tls_crypt_send, tls_crypt_recv);
+                break;
+            case TLS_PLAIN:
+                break;
+            }
+
+            ta_pid_send.init();
+            ta_pid_recv.init("OOB-PROBE", 0, stats);
+
+            psid_self.randomize(*c.rng);
+        }
+
+        //! the client session id carried in the probe (echoed back in the reply)
+        const ProtoSessionID &self_psid() const
+        {
+            return psid_self;
+        }
+
+        /**
+         * @brief Wrap an already-encoded SERVER_PROBE payload in place.
+         * @param buf   holds the plaintext OOB payload on entry, the wrapped
+         *              packet on return
+         * @param work  scratch buffer (used only by the tls-crypt paths)
+         */
+        void wrap(BufferAllocated &buf, BufferAllocated &work)
+        {
+            const PacketIDControl::time_t now_secs = config->now->seconds_since_epoch();
+            switch (mode)
+            {
+            case TLS_AUTH:
+                wrap_tls_auth(CONTROL_OOB_V1, buf, ta_pid_send, now_secs, hmac_size, psid_self, KEY_ID, *ta_hmac_send);
+                break;
+            case TLS_CRYPT:
+                wrap_tls_crypt(CONTROL_OOB_V1, buf, work, *config->frame, ta_pid_send, now_secs, hmac_size, psid_self, KEY_ID, *tls_crypt_send, nullptr);
+                break;
+            case TLS_CRYPT_V2:
+                wrap_tls_crypt(CONTROL_OOB_WKC_V1, buf, work, *config->frame, ta_pid_send, now_secs, hmac_size, psid_self, KEY_ID, *tls_crypt_send, &config->wkc);
+                break;
+            case TLS_PLAIN:
+                wrap_tls_plain(CONTROL_OOB_V1, buf, psid_self, KEY_ID);
+                break;
+            }
+        }
+
+        /**
+         * @brief Unwrap a received PROBE_REPLY in place.
+         * @param recv     the wrapped packet on entry, the plaintext OOB payload
+         *                 on return (when OK)
+         * @param work     scratch buffer (used only by the tls-crypt paths)
+         * @param src_psid set to the server's session id
+         * @param pid      set to the packet id (unset for plaintext)
+         * @return the crypto/framing status; OK means @p recv holds the payload
+         */
+        UnwrapStatus unwrap(BufferAllocated &recv,
+                            BufferAllocated &work,
+                            ProtoSessionID &src_psid,
+                            PacketIDControl &pid)
+        {
+            // The unwrap helpers walk the fixed header -- opcode, psid, packet id and
+            // hmac, whose order differs per mode but not its size --
+            // with advance()/read(), which throw on a short buffer. In a session
+            // that is caught upstream, but a probe reply is parsed inside the
+            // prober's asio receive handler, where an exception has nowhere to go.
+            // Drop anything too small to hold the header instead.
+            const size_t header_size = OPCODE_SIZE + ProtoSessionID::SIZE + PacketIDControl::size() + hmac_size;
+
+            switch (mode)
+            {
+            case TLS_AUTH:
+                if (recv.size() < header_size)
+                    return UnwrapStatus::DROP;
+                return unwrap_tls_auth(recv, hmac_size, *ta_hmac_recv, ta_pid_recv, src_psid, pid);
+            case TLS_CRYPT:
+            case TLS_CRYPT_V2:
+                if (recv.size() < header_size)
+                    return UnwrapStatus::DROP;
+                return unwrap_tls_crypt(recv, work, *config->frame, hmac_size, *tls_crypt_recv, ta_pid_recv, src_psid, pid);
+            case TLS_PLAIN:
+                // plaintext control channel: [op][psid][payload]
+                if (recv.size() < OPCODE_SIZE + ProtoSessionID::SIZE)
+                    return UnwrapStatus::DROP;
+                recv.advance(OPCODE_SIZE);
+                src_psid.read(recv);
+                return UnwrapStatus::OK;
+            }
+            return UnwrapStatus::DROP;
+        }
+
+      private:
+        static constexpr unsigned int KEY_ID = 0;
+
+        ProtoConfig::Ptr config;
+        TLSWrapMode mode = TLS_PLAIN;
+        size_t hmac_size = 0;
+
+        OvpnHMACInstance::Ptr ta_hmac_send;
+        OvpnHMACInstance::Ptr ta_hmac_recv;
+        TLSCryptInstance::Ptr tls_crypt_send;
+        TLSCryptInstance::Ptr tls_crypt_recv;
+
+        PacketIDControlSend ta_pid_send;
+        PacketIDControlReceive ta_pid_recv;
+        ProtoSessionID psid_self;
+    };
+
     // KeyContext encapsulates a single SSL/TLS session.
     // ProtoStackBase uses CRTP-based static polymorphism for method callbacks.
     class KeyContext : ProtoStackBase<Packet, KeyContext>, public RC<thread_unsafe_refcount>
     {
-        typedef ProtoStackBase<Packet, KeyContext> Base;
+        using Base = ProtoStackBase<Packet, KeyContext>;
         friend Base;
-        typedef Base::ReliableSend ReliableSend;
-        typedef Base::ReliableRecv ReliableRecv;
+#ifdef UNIT_TEST
+        // test seam: lets ProtoContext::force_resend_wkc() set resend_wkc
+        friend class ProtoContext;
+#endif
+        using ReliableSend = Base::ReliableSend;
+        using ReliableRecv = Base::ReliableRecv;
 
         // ProtoStackBase protected vars
         using Base::now;
@@ -1510,16 +2146,12 @@ class ProtoContext
         // for example if cipher/digest are pushed.
         struct DataChannelKey
         {
-            DataChannelKey()
-            {
-            }
-
             OpenVPNStaticKey key;
             std::optional<CryptoDCInstance::RekeyType> rekey_type;
         };
 
       public:
-        typedef RCPtr<KeyContext> Ptr;
+        using Ptr = RCPtr<KeyContext>;
 
         // ProtoStackBase member functions
         using Base::export_key_material;
@@ -1612,12 +2244,13 @@ class ProtoContext
             }
         }
 
-        KeyContext(ProtoContext &p, const bool initiator)
+        KeyContext(ProtoContext &p, const bool initiator, bool psid_cookie_mode = false)
             : Base(*p.config->ssl_factory,
                    p.config->now,
                    p.config->tls_timeout,
                    p.config->frame,
-                   p.stats),
+                   p.stats,
+                   psid_cookie_mode),
               proto(p),
               state(STATE_UNDEF),
               crypto_flags(0),
@@ -1642,6 +2275,10 @@ class ProtoContext
 
             // set must-negotiate-by time
             set_event(KEV_NONE, KEV_NEGOTIATE, construct_time + proto.config->handshake_window);
+
+            // no WKc comes with a renegotiation
+            if (proto.tls_crypt_metadata)
+                Base::set_sni_hint(proto.tls_crypt_metadata->sni_hint());
         }
 
         void set_protocol(const Protocol &p)
@@ -1654,9 +2291,20 @@ class ProtoContext
             return Base::get_tls_warnings();
         }
 
-        // need to call only on the initiator side of the connection
-        void start()
+        /**
+         * @brief Initialize the state machine and start protocol negotiation
+         *
+         * Called by ProtoContext::start()
+         *
+         * @param cookie_psid  see comment in ProtoContext::reset()
+         */
+        void start(const ProtoSessionID cookie_psid = ProtoSessionID())
         {
+            if (cookie_psid.defined())
+            {
+                set_state(S_WAIT_RESET_ACK);
+                dirty = true;
+            }
             if (state == C_INITIAL || state == S_INITIAL)
             {
                 send_reset();
@@ -1695,8 +2343,7 @@ class ProtoContext
             const Time t = Base::next_retransmit();
             if (t <= next_event_time)
                 return t;
-            else
-                return next_event_time;
+            return next_event_time;
         }
 
         void app_send_validate(BufferPtr &&bp)
@@ -1773,7 +2420,8 @@ class ProtoContext
 
                     // trigger renegotiation if we hit decrypt data limit
                     if (data_limit)
-                        data_limit_add(DataLimit::Decrypt, buf.size());
+                        if (!data_limit_add(DataLimit::Decrypt, buf.size()))
+                            throw proto_option_error(ERR_INVALID_OPTION_CRYPTO, "Unable to add data limit");
 
                     // decompress packet
                     if (compress)
@@ -1781,12 +2429,12 @@ class ProtoContext
 
                     // set MSS for segments server can receive
                     if (proto.config->mss_fix > 0)
-                        MSSFix::mssfix(buf, proto.config->mss_fix);
+                        MSSFix::mssfix(buf, numeric_cast<uint16_t>(proto.config->mss_fix));
                 }
                 else
                     buf.reset_size(); // no crypto context available
             }
-            catch (BufferException &)
+            catch (std::exception &)
             {
                 proto.stats->error(Error::BUFFER_ERROR);
                 buf.reset_size();
@@ -1823,8 +2471,7 @@ class ProtoContext
         {
             if (next_event == KEV_BECOME_PRIMARY)
                 return next_event_time;
-            else
-                return Time();
+            return Time();
         }
 
         // is an KEV_x event pending?
@@ -1934,6 +2581,22 @@ class ProtoContext
             }
         }
 
+        /**
+         * @brief May a packet with this opcode convert a tls-auth session to tls-crypt-v2?
+         *
+         * A server holding both keys starts every session in TLS_AUTH, and only
+         * decapsulate() converts it, once a WKc arrives. validate() runs ahead of that and
+         * has to agree on which packet may convert, so the test is shared.
+         */
+        static bool tls_crypt_v2_convertible(const ProtoContext &proto, const unsigned int opcode)
+        {
+            return proto.is_server()
+                   && proto.tls_wrap_mode == TLS_AUTH
+                   && !proto.psid_peer.defined()
+                   && proto.config->tls_crypt_v2_enabled()
+                   && opcode_carries_wkc(opcode);
+        }
+
         // validate the integrity of a packet
         static bool validate(const Buffer &net_buf, ProtoContext &proto, TimePtr now)
         {
@@ -1944,13 +2607,20 @@ class ProtoContext
                 switch (proto.tls_wrap_mode)
                 {
                 case TLS_AUTH:
+                    if (tls_crypt_v2_convertible(proto, opcode_extract(recv[0])))
+                    {
+                        // Still TLS_AUTH only because decapsulate() has not converted the
+                        // session yet; the tls-auth key would reject every genuine
+                        // tls-crypt-v2 client.
+                        OVPN_LOG_VERBOSE("SKIPPING VALIDATION OF WKc-BEARING PACKET");
+                        return true;
+                    }
                     return validate_tls_auth(recv, proto, now);
                 case TLS_CRYPT_V2:
-                    if (opcode_extract(recv[0]) == CONTROL_HARD_RESET_CLIENT_V3)
+                    if (proto.is_server() && opcode_carries_wkc(opcode_extract(recv[0])))
                     {
-                        // skip validation of HARD_RESET_V3 because the tls-crypt
-                        // engine has not been initialized yet
-                        OPENVPN_LOG_PROTO_VERBOSE("SKIPPING VALIDATION OF HARD_RESET_V3");
+                        // Nothing to judge it with: this packet keys the receive context.
+                        OVPN_LOG_VERBOSE("SKIPPING VALIDATION OF WKc-BEARING PACKET");
                         return true;
                     }
                     /* no break */
@@ -1960,9 +2630,9 @@ class ProtoContext
                     return validate_tls_plain(recv, proto, now);
                 }
             }
-            catch (BufferException &e)
+            catch ([[maybe_unused]] BufferException &e)
             {
-                OPENVPN_LOG_PROTO_VERBOSE("validate() exception: " << e.what());
+                OVPN_LOG_VERBOSE("validate() exception: " << e.what());
             }
             return false;
         }
@@ -1985,9 +2655,9 @@ class ProtoContext
                 tlsprf->generate_key_expansion(dck->key, proto.psid_self, proto.psid_peer);
             }
             tlsprf->erase();
-            OPENVPN_LOG_PROTO_VERBOSE(proto.debug_prefix()
-                                      << " KEY " << CryptoAlgs::name(proto.config->dc.key_derivation())
-                                      << " " << proto.mode().str() << ' ' << dck->key.render());
+            OVPN_LOG_VERBOSE(proto.debug_prefix()
+                             << " KEY " << CryptoAlgs::name(proto.config->dc.key_derivation())
+                             << " " << proto.mode().str() << ' ' << dck->key.render());
 
             if (data_channel_key)
             {
@@ -1996,7 +2666,7 @@ class ProtoContext
             dck.swap(data_channel_key);
         }
 
-        void calculate_mssfix(Config &c)
+        void calculate_mssfix(ProtoConfig &c)
         {
             if (c.mss_parms.fixed)
             {
@@ -2016,7 +2686,7 @@ class ProtoContext
                 return;
             }
 
-            int payload_overhead = 0;
+            auto payload_overhead = size_t(0);
 
             // compv2 doesn't increase payload size
             switch (c.comp_ctx.type())
@@ -2030,19 +2700,19 @@ class ProtoContext
             }
 
             if (CryptoAlgs::mode(c.dc.cipher()) == CryptoAlgs::CBC_HMAC)
-                payload_overhead += PacketID::size(PacketID::SHORT_FORM);
+                payload_overhead += PacketIDData::size(false);
 
             // account for IPv4 and TCP headers of the payload, mssfix method
             // will add 20 extra bytes if payload is IPv6
             payload_overhead += 20 + 20;
 
-            int overhead = c.protocol.extra_transport_bytes()
-                           + (enable_op32 ? OP_SIZE_V2 : 1)
-                           + c.dc.context().encap_overhead();
+            auto overhead = c.protocol.extra_transport_bytes()
+                            + (enable_op32 ? OP_SIZE_V2 : 1)
+                            + c.dc.context().encap_overhead();
 
             // in CBC mode, the packet id is part of the payload size / overhead
             if (CryptoAlgs::mode(c.dc.cipher()) != CryptoAlgs::CBC_HMAC)
-                overhead += PacketID::size(PacketID::SHORT_FORM);
+                overhead += PacketIDData::size(false);
 
             if (c.mss_parms.mtu)
             {
@@ -2054,7 +2724,7 @@ class ProtoContext
                                 : sizeof(struct UDPHeader);
             }
 
-            int target = c.mss_parms.mssfix - overhead;
+            auto target = c.mss_parms.mssfix - overhead;
             if (CryptoAlgs::mode(c.dc.cipher()) == CryptoAlgs::CBC_HMAC)
             {
                 // openvpn3 crypto includes blocksize in overhead, but we can
@@ -2063,21 +2733,26 @@ class ProtoContext
                 // larger than target by running down target to the nearest
                 // multiple of multiple and substracting 1.
 
-                int block_size = CryptoAlgs::block_size(c.dc.cipher());
+                auto block_size = CryptoAlgs::block_size(c.dc.cipher());
                 target += block_size;
                 target = (target / block_size) * block_size;
                 target -= 1;
             }
 
-            c.mss_fix = target - payload_overhead;
-            if (c.debug_level > 1)
+            if (!is_safe_conversion<decltype(c.mss_fix)>(target - payload_overhead))
             {
-                OPENVPN_LOG("mssfix=" << c.mss_fix
-                                      << " (upper bound=" << c.mss_parms.mssfix
-                                      << ", overhead=" << overhead
-                                      << ", payload_overhead=" << payload_overhead
-                                      << ", target=" << target << ")");
+                OPENVPN_LOG("mssfix disabled since computed value is outside type bounds ("
+                            << c.mss_fix << ")");
+                c.mss_fix = 0;
+                return;
             }
+
+            c.mss_fix = static_cast<decltype(c.mss_fix)>(target - payload_overhead);
+            OVPN_LOG_VERBOSE("mssfix=" << c.mss_fix
+                                       << " (upper bound=" << c.mss_parms.mssfix
+                                       << ", overhead=" << overhead
+                                       << ", payload_overhead=" << payload_overhead
+                                       << ", target=" << target << ")");
         }
 
         // Initialize the components of the OpenVPN data channel protocol
@@ -2090,7 +2765,7 @@ class ProtoContext
 
             // set up crypto for data channel
             bool enable_compress = true;
-            Config &c = *proto.config;
+            ProtoConfig &c = *proto.config;
             const unsigned int key_dir = proto.is_server() ? OpenVPNStaticKey::INVERSE : OpenVPNStaticKey::NORMAL;
             const OpenVPNStaticKey &key = data_channel_key->key;
 
@@ -2100,8 +2775,8 @@ class ProtoContext
                 DataLimit::Parameters dp;
                 dp.encrypt_red_limit = OPENVPN_BS64_DATA_LIMIT;
                 dp.decrypt_red_limit = OPENVPN_BS64_DATA_LIMIT;
-                OPENVPN_LOG_PROTO("Per-Key Data Limit: "
-                                  << dp.encrypt_red_limit << '/' << dp.decrypt_red_limit);
+                OVPN_LOG_INFO("Per-Key Data Limit: "
+                              << dp.encrypt_red_limit << '/' << dp.decrypt_red_limit);
                 data_limit.reset(new DataLimit(dp));
             }
 
@@ -2118,10 +2793,7 @@ class ProtoContext
                 crypto->init_hmac(key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::ENCRYPT | key_dir),
                                   key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir));
 
-            crypto->init_pid(PacketID::SHORT_FORM,
-                             c.pid_mode,
-                             PacketID::SHORT_FORM,
-                             "DATA",
+            crypto->init_pid("DATA",
                              int(key_id_),
                              proto.stats);
 
@@ -2157,6 +2829,302 @@ class ProtoContext
             return state;
         }
 
+        /**
+         * @brief Smallest tls-crypt frame a WKc can be appended to
+         *
+         * Header, auth tag, an empty ACK array and the reliable ID, with no ciphertext --
+         * a WKc can fill a packet by itself, see control_ciphertext_capacity().
+         */
+        static size_t tls_crypt_frame_size(const ProtoConfig &proto_config)
+        {
+            return TLSCryptContext::hmac_offset
+                   + proto_config.tls_crypt_context->digest_size()
+                   // the following is the tls-crypt payload
+                   + sizeof(char)  // length of ACK array
+                   + sizeof(id_t); // reliable ID
+        }
+
+        /**
+         * @brief What a WKc holds besides the client key and the metadata
+         *
+         * Its own trailing length field, the authentication tag ``T``, and the server key
+         * ID where one is configured. A WKc smaller than this cannot be parsed at all, so
+         * it is the floor an attacker-supplied length is held to.
+         */
+        static size_t wkc_overhead(const ProtoConfig &proto_config)
+        {
+            return sizeof(uint16_t)
+                   + proto_config.tls_crypt_context->digest_size()
+                   + (proto_config.tls_crypt_v2_serverkey_id ? sizeof(uint32_t) : 0);
+        }
+
+        /**
+         * @brief Read and validate the WKc length a tls-crypt-v2 packet ends with
+         *
+         * ``wkc_len`` is read straight from the last two bytes of the packet and is
+         * therefore fully attacker-controlled. It has to be validated before any pointer
+         * arithmetic uses it: the WKc must fit between the end of the tls-crypt frame and
+         * the end of the packet, and hold at least @p min_wkc_len bytes. Without this a
+         * bogus length underflows the unsigned size computations into a wild pointer,
+         * causing an out-of-bounds read during decryption -- an unauthenticated remote DoS.
+         *
+         * @return false if @p recv is too short to hold the tls-crypt frame and the
+         *         length field, or if ``wkc_len`` is smaller than @p min_wkc_len or
+         *         larger than the space behind the frame.
+         */
+        static bool trailing_wkc_len(const Buffer &recv,
+                                     const ProtoConfig &proto_config,
+                                     const size_t min_wkc_len,
+                                     uint16_t &wkc_len)
+        {
+            const size_t frame_size = tls_crypt_frame_size(proto_config);
+            const size_t orig_size = recv.size();
+
+            if (orig_size < (frame_size + sizeof(wkc_len)))
+                return false;
+
+            // avoid unaligned access
+            std::memcpy(&wkc_len, recv.c_data() + orig_size - sizeof(wkc_len), sizeof(wkc_len));
+            wkc_len = ntohs(wkc_len);
+
+            return wkc_len >= min_wkc_len && wkc_len <= (orig_size - frame_size);
+        }
+
+        /**
+         * @brief The metadata record a WKc carried, for TLSCryptMetadata::verify()
+         *
+         * Handed back rather than checked in place: only the caller knows when the record
+         * has provenance, which for the session is once the frame has authenticated -- see
+         * verify_wkc_metadata().
+         */
+        struct WkcMetadata
+        {
+            //! -1 when the WKc carried no metadata at all
+            int type = -1;
+            BufferAllocated payload;
+        };
+
+        /**
+         * @brief What a WKc yields, owned by whoever asked for the unwrap
+         *
+         * Handed back rather than written into the config the unwrap was given: on the
+         * psid cookie path that config is the one every session on the thread is cloned
+         * from, and the key belongs to one client.
+         */
+        struct UnwrappedWkc
+        {
+            //! Kc, the client key the WKc wrapped
+            OpenVPNStaticKey client_key;
+            WkcMetadata metadata;
+        };
+
+        /**
+         * @brief  Extract and process the TLS crypt WKc information.
+         * @param  recv                Buffer containing the raw packet.
+         * @param  proto_config        Config object holding the settings needed for processing.
+         * @param  tls_crypt_server    Server context used only to process incoming WKc's.
+         * @param  unwrapped           Receives the client key and the metadata record the
+         *                             WKc carried. Written only on success.
+         * @return Error::SUCCESS on success.
+         */
+        static Error::Type unwrap_tls_crypt_wkc(Buffer &recv,
+                                                const ProtoConfig &proto_config,
+                                                TLSCryptInstance &tls_crypt_server,
+                                                UnwrappedWkc &unwrapped)
+        {
+            // the ``WKc`` is located at the end of the packet, after the tls-crypt
+            // payload.
+            //
+            // K_id is optional, and controlled by proto_config.tls_crypt_v2_serverkey_id.
+            // If it is missing, we will use a single server key for all clients.
+            //
+            // Format is as follows:
+            //
+            // ``len = len(WKc)`` (16 bit, network byte order)
+            // ``T = HMAC-SHA256(Ka, len || K_id || Kc || metadata)``
+            // ``IV = 128 most significant bits of T``
+            // ``WKc = T || AES-256-CTR(Ke, IV, Kc || metadata) || K_id || len``
+
+            const unsigned char *orig_data = recv.data();
+            const size_t orig_size = recv.size();
+            const size_t hmac_size = proto_config.tls_crypt_context->digest_size();
+            const size_t tls_frame_size = tls_crypt_frame_size(proto_config);
+
+            uint32_t k_id = 0;
+            const size_t serverkey_id_size = proto_config.tls_crypt_v2_serverkey_id ? sizeof(k_id) : 0;
+
+            // Establishes ``wkc_overhead() <= wkc_len <= orig_size - tls_frame_size``, so
+            // the WKc holds its own length field, the authentication tag ``T`` and the
+            // optional ``K_id``, and fits behind the tls-crypt frame. Both wkc_raw_size
+            // expressions below then come to at least ``hmac_size + serverkey_id_size``,
+            // which is what keeps the ``K_id`` read and the ciphertext length handed to
+            // decrypt() from underflowing.
+            uint16_t wkc_len;
+            if (!trailing_wkc_len(recv, proto_config, wkc_overhead(proto_config), wkc_len))
+                return Error::CC_ERROR;
+
+            // A CONTROL_HARD_RESET_CLIENT_V3 carries nothing but the ``WKc`` behind the
+            // tls-crypt frame, so its extent follows from the sizes; a P_CONTROL_WKC_V1
+            // carries a payload as well, and only ``wkc_len`` locates the ``WKc`` in it.
+            const unsigned char *wkc_raw;
+            size_t wkc_raw_size;
+            if (opcode_extract(orig_data[0]) == CONTROL_HARD_RESET_CLIENT_V3)
+            {
+                wkc_raw = orig_data + tls_frame_size;
+                wkc_raw_size = orig_size - tls_frame_size - sizeof(wkc_len);
+            }
+            else
+            {
+                wkc_raw = orig_data + orig_size - wkc_len;
+                wkc_raw_size = wkc_len - sizeof(wkc_len);
+            }
+
+            if (proto_config.tls_crypt_v2_serverkey_id)
+            {
+                std::memcpy(&k_id, wkc_raw + wkc_raw_size - serverkey_id_size, sizeof(k_id));
+                k_id = ntohl(k_id);
+            }
+
+            // length sanity check (the size of the ``len`` field is included in the value)
+            if ((wkc_len - sizeof(uint16_t)) != wkc_raw_size)
+                return Error::CC_ERROR;
+
+            BufferAllocated plaintext(wkc_len, BufAllocFlags::CONSTRUCT_ZERO);
+            // plaintext will be used to compute the Auth Tag, therefore start by prepending
+            // the WKc length in network order
+            const uint16_t net_wkc_len = htons(wkc_len);
+            plaintext.write(&net_wkc_len, sizeof(net_wkc_len));
+
+            if (proto_config.tls_crypt_v2_serverkey_id)
+            {
+                const std::string serverkey_fn = render_hex_number(k_id, true) + ".key";
+                const std::string serverkey_path = proto_config.tls_crypt_v2_serverkey_dir + "/"
+                                                   + serverkey_fn.substr(0, 2) + "/" + serverkey_fn;
+
+                // The K_id came off the wire, so a client whose key we never had -- or a
+                // forgery -- names a file that is not there. That is a WKc we cannot unwrap
+                // and nothing more, so nothing here may leave as an exception: decapsulate()
+                // catches BufferException alone and open_file_error is not one.
+                try
+                {
+                    TLSCryptV2ServerKey tls_crypt_v2_key;
+                    tls_crypt_v2_key.parse(read_text(serverkey_path));
+
+                    // Ka/Ke are of use only for the unwrap they key below, so they stay here
+                    // rather than on the config the cookie layer shares between sessions.
+                    OpenVPNStaticKey serverkey_material;
+                    tls_crypt_v2_key.extract_key(serverkey_material);
+
+                    // the server key is composed by one key set only, therefore direction and
+                    // mode should not be specified when slicing
+                    tls_crypt_server.init(proto_config.ssl_factory->libctx(),
+                                          serverkey_material.slice(OpenVPNStaticKey::HMAC),
+                                          serverkey_material.slice(OpenVPNStaticKey::CIPHER));
+                }
+                catch (const std::exception &e)
+                {
+                    OVPN_LOG_VERBOSE("DROPPING WKc NAMING TLS-crypt-V2 server key "
+                                     << serverkey_path << ": " << e.what());
+                    return Error::DECRYPT_ERROR;
+                }
+
+                OVPN_LOG_VERBOSE("Using TLS-crypt-V2 server key " << serverkey_path);
+
+                k_id = htonl(k_id);
+                plaintext.write(&k_id, sizeof(k_id));
+            }
+            else
+            {
+                // Same key for every client, straight off the config. Keying the context is
+                // this function's business in either mode: a caller that had to do it for one
+                // mode and not the other could forget.
+                if (!proto_config.tls_crypt_key.defined())
+                {
+                    OVPN_LOG_VERBOSE("DROPPING WKc WITH NO TLS-crypt-V2 SERVER KEY TO UNWRAP IT");
+                    return Error::DECRYPT_ERROR;
+                }
+
+                tls_crypt_server.init(proto_config.ssl_factory->libctx(),
+                                      proto_config.tls_crypt_key.slice(OpenVPNStaticKey::HMAC),
+                                      proto_config.tls_crypt_key.slice(OpenVPNStaticKey::CIPHER));
+            }
+
+            // the ``len || K_id`` prefix written above is part of the authenticated
+            // plaintext, but the decrypted key material goes behind it
+            const size_t plaintext_prefix_size = sizeof(wkc_len) + serverkey_id_size;
+
+            const size_t plaintext_max_size = plaintext.max_size();
+            if (plaintext_max_size <= plaintext_prefix_size)
+                return Error::DECRYPT_ERROR;
+
+            const size_t decrypt_bytes = tls_crypt_server.decrypt(wkc_raw,
+                                                                  plaintext.data() + plaintext_prefix_size,
+                                                                  plaintext_max_size - plaintext_prefix_size,
+                                                                  wkc_raw + hmac_size,
+                                                                  wkc_raw_size - hmac_size - serverkey_id_size);
+            plaintext.inc_size(decrypt_bytes);
+
+            // The decrypted part must hold a full 2048-bit client key; metadata behind it is
+            // optional. Measure decrypt_bytes, not plaintext.size(), which also counts the
+            // length prefix and K_id written above.
+            if (decrypt_bytes < OpenVPNStaticKey::KEY_SIZE)
+                return Error::DECRYPT_ERROR;
+
+            if (!tls_crypt_server.hmac_cmp(wkc_raw, 0, plaintext.c_data(), plaintext.size()))
+                return Error::HMAC_ERROR;
+
+            // we can now remove the WKc length (and the server key ID, if present)
+            // from the plaintext, as they are not really part of the key material
+            plaintext.advance(sizeof(wkc_len));
+
+            if (proto_config.tls_crypt_v2_serverkey_id)
+                plaintext.advance(sizeof(k_id));
+
+            plaintext.read(unwrapped.client_key.raw_alloc(), OpenVPNStaticKey::KEY_SIZE);
+
+            // what is left of the plaintext is the metadata, its type byte in front
+            if (!plaintext.empty())
+                unwrapped.metadata.type = plaintext.pop_front();
+            unwrapped.metadata.payload = std::move(plaintext);
+
+            // virtually remove the WKc from the packet
+            recv.set_size(orig_size - wkc_len);
+
+            return Error::SUCCESS;
+        }
+
+        /**
+         * @brief Virtually remove a resent WKc from the end of a CONTROL_WKC_V1 packet
+         *
+         * A client asked to resend its WKc (EARLY_NEG_FLAG_RESEND_WKC) appends it to every
+         * transmission of the third handshake packet, retransmissions included, since
+         * encapsulate() re-runs for each of them. By the time such a packet reaches a
+         * session the client key it wraps is already set up, so the WKc is of no further
+         * use and must simply be taken off: the tls-crypt frame in front of it is what
+         * gets decapsulated, and its auth tag covers that frame alone.
+         *
+         * OpenVPN 2 does the same in tls_crypt_v2_extract_client_key() when its
+         * `initial_packet` argument is false, turning the packet back into a CONTROL_V1.
+         *
+         * @return false if the trailing length does not describe a WKc that fits behind a
+         *         tls-crypt frame, i.e. the packet is malformed and must be dropped.
+         */
+        static bool strip_resent_wkc(Buffer &recv, const ProtoConfig &proto_config)
+        {
+            // nothing is unwrapped here, but a WKc that could not hold the client key is
+            // malformed all the same
+            uint16_t wkc_len;
+            if (!trailing_wkc_len(recv,
+                                  proto_config,
+                                  wkc_overhead(proto_config) + OpenVPNStaticKey::KEY_SIZE,
+                                  wkc_len))
+                return false;
+
+            recv.set_size(recv.size() - wkc_len);
+
+            return true;
+        }
+
       private:
         static bool validate_tls_auth(Buffer &recv, ProtoContext &proto, TimePtr now)
         {
@@ -2174,23 +3142,23 @@ class ProtoContext
                 recv.advance(proto.hmac_size);
                 if (!proto.ta_hmac_recv->ovpn_hmac_cmp(orig_data,
                                                        orig_size,
-                                                       1 + ProtoSessionID::SIZE,
+                                                       OPCODE_SIZE + ProtoSessionID::SIZE,
                                                        proto.hmac_size,
-                                                       PacketID::size(PacketID::LONG_FORM)))
+                                                       PacketIDControl::size()))
                 {
                     return false;
                 }
             }
 
-            // verify source PSID
-            if (!proto.psid_peer.match(src_psid))
+            // verify source PSID; a session has none until accept_peer() pins one
+            if (proto.psid_peer.defined() && !proto.psid_peer.match(src_psid))
                 return false;
 
             // read tls_auth packet ID
-            const PacketID pid = proto.ta_pid_recv.read_next(recv);
+            const PacketIDControl pid = proto.ta_pid_recv.read_next(recv);
 
             // get current time_t
-            const PacketID::time_t t = now->seconds_since_epoch();
+            const PacketIDControl::time_t t = now->seconds_since_epoch();
 
             // verify tls_auth packet ID
             const bool pid_ok = proto.ta_pid_recv.test_add(pid, t, false);
@@ -2208,6 +3176,12 @@ class ProtoContext
 
         static bool validate_tls_crypt(Buffer &recv, ProtoContext &proto, TimePtr now)
         {
+            // in TLS_CRYPT_V2 mode the receive context stays unset until a WKc has been
+            // unwrapped, so a packet reaching here before that has nothing to be judged
+            // with -- whichever opcodes validate() lets past it
+            if (!proto.tls_crypt_recv)
+                return false;
+
             const unsigned char *orig_data = recv.data();
             const size_t orig_size = recv.size();
 
@@ -2216,11 +3190,11 @@ class ProtoContext
             // get source PSID
             ProtoSessionID src_psid(recv);
             // read tls_auth packet ID
-            const PacketID pid = proto.ta_pid_recv.read_next(recv);
+            const PacketIDControl pid = proto.ta_pid_recv.read_next(recv);
 
             recv.advance(proto.hmac_size);
 
-            const size_t head_size = 1 + ProtoSessionID::SIZE + PacketID::size(PacketID::LONG_FORM);
+            const size_t head_size = OPCODE_SIZE + ProtoSessionID::SIZE + PacketIDControl::size();
             const size_t data_offset = head_size + proto.hmac_size;
             if (orig_size < data_offset)
                 return false;
@@ -2248,19 +3222,12 @@ class ProtoContext
                                                 work.size()))
                 return false;
 
-            // verify source PSID
-            if (proto.psid_peer.defined())
-            {
-                if (!proto.psid_peer.match(src_psid))
-                    return false;
-            }
-            else
-            {
-                proto.psid_peer = src_psid;
-            }
+            // verify source PSID, never pin it: only accept_peer() may name our peer
+            if (proto.psid_peer.defined() && !proto.psid_peer.match(src_psid))
+                return false;
 
             // get current time_t
-            const PacketID::time_t t = now->seconds_since_epoch();
+            const PacketIDControl::time_t t = now->seconds_since_epoch();
 
             // verify tls_auth packet ID
             const bool pid_ok = proto.ta_pid_recv.test_add(pid, t, false);
@@ -2280,9 +3247,9 @@ class ProtoContext
             // advance buffer past initial op byte
             recv.advance(1);
 
-            // verify source PSID
             ProtoSessionID src_psid(recv);
-            if (!proto.psid_peer.match(src_psid))
+            // verify source PSID; a session has none until accept_peer() pins one
+            if (proto.psid_peer.defined() && !proto.psid_peer.match(src_psid))
                 return false;
 
             // make sure that our own PSID is contained in packet received from peer
@@ -2297,11 +3264,12 @@ class ProtoContext
 
         bool do_encrypt(BufferAllocated &buf, const bool compress_hint)
         {
-            bool pid_wrap;
+            if (!is_safe_conversion<uint16_t>(proto.config->mss_fix))
+                return false;
 
             // set MSS for segments client can receive
             if (proto.config->mss_fix > 0)
-                MSSFix::mssfix(buf, proto.config->mss_fix);
+                MSSFix::mssfix(buf, static_cast<uint16_t>(proto.config->mss_fix));
 
             // compress packet
             if (compress)
@@ -2309,7 +3277,10 @@ class ProtoContext
 
             // trigger renegotiation if we hit encrypt data limit
             if (data_limit)
-                data_limit_add(DataLimit::Encrypt, buf.size());
+                if (!data_limit_add(DataLimit::Encrypt, buf.size()))
+                    return false;
+
+            bool pid_wrap;
 
             if (enable_op32)
             {
@@ -2318,7 +3289,7 @@ class ProtoContext
                 static_assert(sizeof(op32) == OP_SIZE_V2, "OP_SIZE_V2 inconsistency");
 
                 // encrypt packet
-                pid_wrap = crypto->encrypt(buf, now->seconds_since_epoch(), (const unsigned char *)&op32);
+                pid_wrap = crypto->encrypt(buf, (const unsigned char *)&op32);
 
                 // prepend op
                 buf.prepend((const unsigned char *)&op32, sizeof(op32));
@@ -2326,7 +3297,7 @@ class ProtoContext
             else
             {
                 // encrypt packet
-                pid_wrap = crypto->encrypt(buf, now->seconds_since_epoch(), nullptr);
+                pid_wrap = crypto->encrypt(buf, nullptr);
 
                 // prepend op
                 buf.push_front(op_compose(DATA_V1, key_id_));
@@ -2343,26 +3314,26 @@ class ProtoContext
 
         void set_state(const int newstate)
         {
-            OPENVPN_LOG_PROTO_VERBOSE(proto.debug_prefix()
-                                      << " KeyContext[" << key_id_ << "] "
-                                      << state_string(state) << " -> " << state_string(newstate));
+            OVPN_LOG_VERBOSE(proto.debug_prefix()
+                             << " KeyContext[" << key_id_ << "] "
+                             << state_string(state) << " -> " << state_string(newstate));
             state = newstate;
         }
 
         void set_event(const EventType current)
         {
-            OPENVPN_LOG_PROTO_VERBOSE(proto.debug_prefix()
-                                      << " KeyContext[" << key_id_ << "] "
-                                      << event_type_string(current));
+            OVPN_LOG_VERBOSE(proto.debug_prefix()
+                             << " KeyContext[" << key_id_ << "] "
+                             << event_type_string(current));
             current_event = current;
         }
 
         void set_event(const EventType current, const EventType next, const Time &next_time)
         {
-            OPENVPN_LOG_PROTO_VERBOSE(proto.debug_prefix()
-                                      << " KeyContext[" << key_id_ << "] "
-                                      << event_type_string(current) << " -> " << event_type_string(next)
-                                      << '(' << seconds_until(next_time) << ')');
+            OVPN_LOG_VERBOSE(proto.debug_prefix()
+                             << " KeyContext[" << key_id_ << "] "
+                             << event_type_string(current) << " -> " << event_type_string(next)
+                             << '(' << seconds_until(next_time) << ')');
             current_event = current;
             next_event = next;
             next_event_time = next_time;
@@ -2381,7 +3352,7 @@ class ProtoContext
         {
             if (!key_limit_renegotiation_fired && state >= ACTIVE && !invalidated())
             {
-                OPENVPN_LOG_PROTO_VERBOSE(proto.debug_prefix() << " SCHEDULE KEY LIMIT RENEGOTIATION");
+                OVPN_LOG_VERBOSE(proto.debug_prefix() << " SCHEDULE KEY LIMIT RENEGOTIATION");
 
                 key_limit_renegotiation_fired = true;
                 proto.stats->error(Error::N_KEY_LIMIT_RENEG);
@@ -2403,20 +3374,23 @@ class ProtoContext
         }
 
         // Handle data-limited keys such as Blowfish and other 64-bit block-size ciphers.
-        void data_limit_add(const DataLimit::Mode mode, const size_t size)
+        bool data_limit_add(const DataLimit::Mode mode, const size_t size)
         {
-            const DataLimit::State state = data_limit->add(mode, size);
+            if (is_safe_conversion<DataLimit::size_type>(size))
+                return false;
+            const DataLimit::State state = data_limit->add(mode, static_cast<DataLimit::size_type>(size));
             if (state > DataLimit::None)
                 data_limit_event(mode, state);
+            return true;
         }
 
         // Handle a DataLimit event.
         void data_limit_event(const DataLimit::Mode mode, const DataLimit::State state)
         {
-            OPENVPN_LOG_PROTO_VERBOSE(proto.debug_prefix()
-                                      << " DATA LIMIT " << DataLimit::mode_str(mode)
-                                      << ' ' << DataLimit::state_str(state)
-                                      << " key_id=" << key_id_);
+            OVPN_LOG_VERBOSE(proto.debug_prefix()
+                             << " DATA LIMIT " << DataLimit::mode_str(mode)
+                             << ' ' << DataLimit::state_str(state)
+                             << " key_id=" << key_id_);
 
             // State values:
             //   DataLimit::Green -- first packet received and decrypted.
@@ -2503,16 +3477,13 @@ class ProtoContext
             {
                 return CONTROL_SOFT_RESET_V1;
             }
-            else
-            {
-                if (proto.is_server() == sender)
-                    return CONTROL_HARD_RESET_SERVER_V2;
 
-                if (!tls_crypt_v2)
-                    return CONTROL_HARD_RESET_CLIENT_V2;
-                else
-                    return CONTROL_HARD_RESET_CLIENT_V3;
-            }
+            if (proto.is_server() == sender)
+                return CONTROL_HARD_RESET_SERVER_V2;
+
+            if (!tls_crypt_v2)
+                return CONTROL_HARD_RESET_CLIENT_V2;
+            return CONTROL_HARD_RESET_CLIENT_V3;
         }
 
         void send_reset()
@@ -2656,7 +3627,7 @@ class ProtoContext
 
         void send_auth()
         {
-            BufferPtr buf = new BufferAllocated();
+            auto buf = BufferAllocatedRc::Create();
             proto.config->frame->prepare(Frame::WRITE_SSL_CLEARTEXT, *buf);
             buf->write(proto_context_private::auth_prefix, sizeof(proto_context_private::auth_prefix));
             tlsprf->self_randomize(*proto.config->rng);
@@ -2665,8 +3636,8 @@ class ProtoContext
             write_auth_string(options, *buf);
             if (!proto.is_server())
             {
-                OPENVPN_LOG_PROTO("Tunnel Options:" << options);
-                buf->or_flags(BufferAllocated::DESTRUCT_ZERO);
+                OVPN_LOG_INFO("Tunnel Options:" << options);
+                buf->add_flags(BufAllocFlags::DESTRUCT_ZERO);
                 if (proto.config->xmit_creds)
                     proto.client_auth(*buf);
                 else
@@ -2674,7 +3645,7 @@ class ProtoContext
                     write_empty_string(*buf); // username
                     write_empty_string(*buf); // password
                 }
-                const std::string peer_info = proto.config->peer_info_string();
+                const std::string peer_info = proto.config->peer_info_string(proto.proto_callback->supports_epoch_data());
                 write_auth_string(peer_info, *buf);
             }
             app_send_validate(std::move(buf));
@@ -2693,7 +3664,7 @@ class ProtoContext
                 const std::string username = read_auth_string<std::string>(*buf);
                 const SafeString password = read_auth_string<SafeString>(*buf);
                 const std::string peer_info = read_auth_string<std::string>(*buf);
-                proto.server_auth(username, password, peer_info, Base::auth_cert());
+                proto.proto_callback->server_auth(username, password, peer_info, Base::auth_cert());
             }
         }
 
@@ -2720,8 +3691,7 @@ class ProtoContext
 
         void active()
         {
-            if (proto.config->debug_level >= 1)
-                OPENVPN_LOG_SSL("SSL Handshake: " << Base::ssl_handshake_details());
+            OVPN_LOG_INFO("TLS Handshake: " << Base::ssl_handshake_details());
 
             /* Our internal state machine only decides after push request what protocol
              * options we want to use. Therefore we also have to postpone data key
@@ -2762,21 +3732,29 @@ class ProtoContext
 
         bool verify_src_psid(const ProtoSessionID &src_psid)
         {
-            if (proto.psid_peer.defined())
+            if (proto.psid_peer.defined() && !proto.psid_peer.match(src_psid))
             {
-                if (!proto.psid_peer.match(src_psid))
-                {
-                    proto.stats->error(Error::CC_ERROR);
-                    if (proto.is_tcp())
-                        invalidate(Error::CC_ERROR);
-                    return false;
-                }
-            }
-            else
-            {
-                proto.psid_peer = src_psid;
+                proto.stats->error(Error::CC_ERROR);
+                if (proto.is_tcp())
+                    invalidate(Error::CC_ERROR);
+                return false;
             }
             return true;
+        }
+
+        /**
+         * @brief Adopt @p src_psid as our peer, and mark this packet as ours
+         *
+         * Reached only once a packet has verified under one of this session's keys and
+         * echoed the psid we chose. Pinning earlier let a packet that was then rejected
+         * name the peer anyway. Must precede any queued ACK: prepend_dest_psid_and_acks()
+         * throws without a peer psid.
+         */
+        void accept_peer(const ProtoSessionID &src_psid)
+        {
+            pkt_from_peer = true;
+            if (!proto.psid_peer.defined())
+                proto.psid_peer = src_psid;
         }
 
         bool verify_dest_psid(Buffer &buf)
@@ -2794,76 +3772,23 @@ class ProtoContext
 
         void gen_head_tls_auth(const unsigned int opcode, Buffer &buf)
         {
-            // write tls-auth packet ID
-            proto.ta_pid_send.write_next(buf, true, now->seconds_since_epoch());
-
-            // make space for tls-auth HMAC
-            buf.prepend_alloc(proto.hmac_size);
-
-            // write source PSID
-            proto.psid_self.prepend(buf);
-
-            // write opcode
-            buf.push_front(op_compose(opcode, key_id_));
-
-            // write hmac
-            proto.ta_hmac_send->ovpn_hmac_gen(buf.data(),
-                                              buf.size(),
-                                              1 + ProtoSessionID::SIZE,
-                                              proto.hmac_size,
-                                              PacketID::size(PacketID::LONG_FORM));
+            wrap_tls_auth(opcode, buf, proto.ta_pid_send, now->seconds_since_epoch(), proto.hmac_size, proto.psid_self, key_id_, *proto.ta_hmac_send);
         }
 
         void gen_head_tls_crypt(const unsigned int opcode, BufferAllocated &buf)
         {
-            // in 'work' we store all the fields that are not supposed to be encrypted
-            proto.config->frame->prepare(Frame::ENCRYPT_WORK, work);
-            // make space for HMAC
-            work.prepend_alloc(proto.hmac_size);
-            // write tls-crypt packet ID
-            proto.ta_pid_send.write_next(work, true, now->seconds_since_epoch());
-            // write source PSID
-            proto.psid_self.prepend(work);
-            // write opcode
-            work.push_front(op_compose(opcode, key_id_));
+            // The send context stays unset until a WKc has been unwrapped, and decapsulate()
+            // can put a session into TLS_CRYPT_V2 mode before that ever happens. Giving up
+            // this session is caught per session, where the dereference below would not be.
+            if (!proto.tls_crypt_send)
+                throw proto_error("gen_head_tls_crypt: no tls-crypt send context");
 
-            // compute HMAC using header fields (from 'work') and plaintext
-            // payload (from 'buf')
-            proto.tls_crypt_send->hmac_gen(work.data(),
-                                           TLSCryptContext::hmac_offset,
-                                           buf.c_data(),
-                                           buf.size());
-
-            const size_t data_offset = TLSCryptContext::hmac_offset + proto.hmac_size;
-
-            // encrypt the content of 'buf' (packet payload) into 'work'
-            const size_t encrypt_bytes = proto.tls_crypt_send->encrypt(work.c_data() + TLSCryptContext::hmac_offset,
-                                                                       work.data() + data_offset,
-                                                                       work.max_size() - data_offset,
-                                                                       buf.c_data(),
-                                                                       buf.size());
-            if (!encrypt_bytes)
-            {
-                buf.reset_size();
-                return;
-            }
-            work.inc_size(encrypt_bytes);
-
-            // append WKc to wrapped packet for tls-crypt-v2
-            if ((opcode == CONTROL_HARD_RESET_CLIENT_V3 || opcode == CONTROL_WKC_V1)
-                && (proto.tls_wrap_mode == TLS_CRYPT_V2))
-                proto.tls_crypt_append_wkc(work);
-
-            // 'work' now contains the complete packet ready to go. swap it with 'buf'
-            buf.swap(work);
+            wrap_tls_crypt(opcode, buf, work, *proto.config->frame, proto.ta_pid_send, now->seconds_since_epoch(), proto.hmac_size, proto.psid_self, key_id_, *proto.tls_crypt_send, proto.tls_wrap_mode == TLS_CRYPT_V2 ? &proto.config->wkc : nullptr);
         }
 
         void gen_head_tls_plain(const unsigned int opcode, Buffer &buf)
         {
-            // write source PSID
-            proto.psid_self.prepend(buf);
-            // write opcode
-            buf.push_front(op_compose(opcode, key_id_));
+            wrap_tls_plain(opcode, buf, proto.psid_self, key_id_);
         }
 
         void gen_head(const unsigned int opcode, BufferAllocated &buf)
@@ -2883,6 +3808,61 @@ class ProtoContext
             }
         }
 
+        // True if the control packet with the given reliable-layer id will
+        // carry the tls-crypt-v2 wrapped client key (WKc), appended after the
+        // payload during encapsulation.  Used both to select the CONTROL_WKC_V1
+        // opcode and to reserve room for the WKc when filling the packet with
+        // ciphertext.
+        bool packet_carries_wkc(id_t id) const
+        {
+            return id == 1 && resend_wkc && proto.tls_wrap_mode == TLS_CRYPT_V2;
+        }
+
+        // Worst-case number of bytes this control packet will carry around
+        // the SSL ciphertext once encapsulated and wrapped: the tls wrap
+        // header (opcode, session id, packet id, hmac) plus the reliable
+        // layer message id and the largest possible piggybacked ACK block.
+        // ACKs must be accounted for at their maximum, since retransmits
+        // re-run encapsulate() with whatever ACKs are pending at that time.
+        size_t control_channel_wrap_overhead() const
+        {
+            size_t overhead = OPCODE_SIZE + ProtoSessionID::SIZE + proto.hmac_size;
+            if (proto.tls_wrap_mode != TLS_PLAIN)
+                overhead += PacketIDControl::size();
+            // reliable layer message id
+            overhead += sizeof(id_t);
+            // worst-case ACK block: count byte + ACK ids + dest session id
+            overhead += 1 + sizeof(id_t) * ReliableAck::maximum_acks_control_v1
+                        + ProtoSessionID::SIZE;
+            return overhead;
+        }
+
+        // Maximum amount of SSL ciphertext that may be placed into the control
+        // packet with the given id, such that the fully wrapped packet does
+        // not exceed the mssfix_ctrl limit.  For the packet that also carries
+        // the WKc, the WKc length is subtracted as well.  Called by
+        // ProtoStackBase.
+        size_t control_ciphertext_capacity(id_t id) const
+        {
+            size_t capacity = (*proto.config->frame)[Frame::READ_BIO_MEMQ_STREAM].payload();
+
+            // never let the fully wrapped packet exceed mssfix_ctrl
+            size_t wire_budget = proto.config->mssfix_ctrl;
+            wire_budget -= std::min(wire_budget, control_channel_wrap_overhead());
+            capacity = std::min(capacity, wire_budget);
+
+            if (packet_carries_wkc(id) && proto.config->wkc.defined())
+            {
+                // clamp: a large WKc could exceed a small budget (mssfix-ctrl
+                // can go as low as 256); never let the subtraction wrap.  A
+                // zero capacity yields a CONTROL_WKC_V1 packet carrying the
+                // WKc alone, with all ciphertext deferred to the following
+                // messages.
+                capacity -= std::min(capacity, proto.config->wkc.size());
+            }
+            return capacity;
+        }
+
         void encapsulate(id_t id, Packet &pkt) // called by ProtoStackBase
         {
             BufferAllocated &buf = *pkt.buf;
@@ -2895,7 +3875,7 @@ class ProtoContext
 
             // generate message head
             int opcode = pkt.opcode;
-            if (id == 1 && resend_wkc)
+            if (packet_carries_wkc(id))
             {
                 opcode = CONTROL_WKC_V1;
             }
@@ -2913,7 +3893,7 @@ class ProtoContext
             gen_head(ACK_V1, buf);
         }
 
-        bool decapsulate_post_process(Packet &pkt, ProtoSessionID &src_psid, const PacketID pid)
+        bool decapsulate_post_process(Packet &pkt, ProtoSessionID &src_psid, const PacketIDControl pid)
         {
             Buffer &recv = *pkt.buf;
 
@@ -2925,7 +3905,7 @@ class ProtoContext
                 return false;
 
             // get current time_t
-            const PacketID::time_t t = now->seconds_since_epoch();
+            const PacketIDControl::time_t t = now->seconds_since_epoch();
             // verify tls_auth/crypt packet ID
             const bool pid_ok = proto.ta_pid_recv.test_add(pid, t, false);
 
@@ -2937,6 +3917,8 @@ class ProtoContext
                 if (!verify_dest_psid(recv))
                     return false;
             }
+
+            accept_peer(src_psid);
 
             // for CONTROL packets only, not ACK
             if (pkt.opcode != ACK_V1)
@@ -2956,7 +3938,7 @@ class ProtoContext
                     // was packet accepted by reliable receive object?
                     if (rflags & ReliableRecv::IN_WINDOW)
                     {
-                        // remember tls_auth packet ID so that it can't be replaye
+                        // remember tls_auth packet ID so that it can't be replayed
                         proto.ta_pid_recv.test_add(pid, t, true);
                         return true;
                     }
@@ -2982,92 +3964,59 @@ class ProtoContext
 
         bool decapsulate_tls_auth(Packet &pkt)
         {
-            Buffer &recv = *pkt.buf;
-            const unsigned char *orig_data = recv.data();
-            const size_t orig_size = recv.size();
-
-            // advance buffer past initial op byte
-            recv.advance(1);
-
-            // get source PSID
-            ProtoSessionID src_psid(recv);
-
-            // verify HMAC
+            ProtoSessionID src_psid;
+            PacketIDControl pid;
+            switch (unwrap_tls_auth(*pkt.buf, proto.hmac_size, *proto.ta_hmac_recv, proto.ta_pid_recv, src_psid, pid))
             {
-                recv.advance(proto.hmac_size);
-                if (!proto.ta_hmac_recv->ovpn_hmac_cmp(orig_data,
-                                                       orig_size,
-                                                       1 + ProtoSessionID::SIZE,
-                                                       proto.hmac_size,
-                                                       PacketID::size(PacketID::LONG_FORM)))
-                {
-                    proto.stats->error(Error::HMAC_ERROR);
-                    if (proto.is_tcp())
-                        invalidate(Error::HMAC_ERROR);
-                    return false;
-                }
-            }
+            case UnwrapStatus::OK:
+                return decapsulate_post_process(pkt, src_psid, pid);
 
-            // read tls_auth packet ID
-            const PacketID pid = proto.ta_pid_recv.read_next(recv);
-
-            return decapsulate_post_process(pkt, src_psid, pid);
-        }
-
-        bool decapsulate_tls_crypt(Packet &pkt)
-        {
-            BufferAllocated &recv = *pkt.buf;
-            const unsigned char *orig_data = recv.data();
-            const size_t orig_size = recv.size();
-
-            // advance buffer past initial op byte
-            recv.advance(1);
-            // get source PSID
-            ProtoSessionID src_psid(recv);
-            // get tls-crypt packet ID
-            const PacketID pid = proto.ta_pid_recv.read_next(recv);
-            // skip the hmac
-            recv.advance(proto.hmac_size);
-
-            const size_t data_offset = TLSCryptContext::hmac_offset + proto.hmac_size;
-            if (orig_size < data_offset)
-                return false;
-
-            // decrypt payload
-            proto.config->frame->prepare(Frame::DECRYPT_WORK, work);
-
-            const size_t decrypt_bytes = proto.tls_crypt_recv->decrypt(orig_data + TLSCryptContext::hmac_offset,
-                                                                       work.data(),
-                                                                       work.max_size(),
-                                                                       recv.c_data(),
-                                                                       recv.size());
-            if (!decrypt_bytes)
-            {
-                proto.stats->error(Error::DECRYPT_ERROR);
-                if (proto.is_tcp())
-                    invalidate(Error::DECRYPT_ERROR);
-                return false;
-            }
-
-            work.inc_size(decrypt_bytes);
-
-            // verify HMAC
-            if (!proto.tls_crypt_recv->hmac_cmp(orig_data,
-                                                TLSCryptContext::hmac_offset,
-                                                work.c_data(),
-                                                work.size()))
-            {
+            case UnwrapStatus::HMAC_ERROR:
                 proto.stats->error(Error::HMAC_ERROR);
                 if (proto.is_tcp())
                     invalidate(Error::HMAC_ERROR);
                 return false;
+
+            default:
+                return false;
+            }
+        }
+
+        bool decapsulate_tls_crypt(Packet &pkt)
+        {
+            // in TLS_CRYPT_V2 mode the receive context stays unset until a WKc has been
+            // unwrapped, so any other opcode reaching us before that has no key to be
+            // decrypted with
+            if (!proto.tls_crypt_recv)
+            {
+                proto.stats->error(Error::CC_ERROR);
+                if (proto.is_tcp())
+                    invalidate(Error::CC_ERROR);
+                return false;
             }
 
-            // move the decrypted payload to 'recv', so that the processing of the
-            // packet can continue
-            recv.swap(work);
+            ProtoSessionID src_psid;
+            PacketIDControl pid;
+            switch (unwrap_tls_crypt(*pkt.buf, work, *proto.config->frame, proto.hmac_size, *proto.tls_crypt_recv, proto.ta_pid_recv, src_psid, pid))
+            {
+            case UnwrapStatus::OK:
+                return decapsulate_post_process(pkt, src_psid, pid);
 
-            return decapsulate_post_process(pkt, src_psid, pid);
+            case UnwrapStatus::DECRYPT_ERROR:
+                proto.stats->error(Error::DECRYPT_ERROR);
+                if (proto.is_tcp())
+                    invalidate(Error::DECRYPT_ERROR);
+                return false;
+
+            case UnwrapStatus::HMAC_ERROR:
+                proto.stats->error(Error::HMAC_ERROR);
+                if (proto.is_tcp())
+                    invalidate(Error::HMAC_ERROR);
+                return false;
+
+            default: // DROP: malformed / too short
+                return false;
+            }
         }
 
         bool decapsulate_tls_plain(Packet &pkt)
@@ -3093,6 +4042,8 @@ class ProtoContext
                     return false;
             }
 
+            accept_peer(src_psid);
+
             // for CONTROL packets only, not ACK
             if (pkt.opcode != ACK_V1)
             {
@@ -3113,134 +4064,195 @@ class ProtoContext
             return false;
         }
 
-        bool unwrap_tls_crypt_wkc(Buffer &recv)
+        /**
+         * @brief May this packet make a tls-auth server session a tls-crypt-v2 one?
+         *
+         * Only the opcode asks for the switch and packet_type() weighs nothing else, so a
+         * spoofed datagram gets a say. Hence: on offer only until a packet of our peer's
+         * has been accepted, and decapsulate() takes it back if this one is not.
+         */
+        bool tls_crypt_v2_wanted(const Packet &pkt) const
         {
-            // the ``WKc`` is located at the end of the packet, after the tls-crypt
-            // payload.
-            // Format is as follows (as documented by Steffan Karger):
-            //
-            // ``len = len(WKc)`` (16 bit, network byte order)
-            // ``T = HMAC-SHA256(Ka, len || Kc || metadata)``
-            // ``IV = 128 most significant bits of T``
-            // ``WKc = T || AES-256-CTR(Ke, IV, Kc || metadata) || len``
-
-            const unsigned char *orig_data = recv.data();
-            const size_t orig_size = recv.size();
-            const size_t hmac_size = proto.config->tls_crypt_context->digest_size();
-            const size_t tls_frame_size = 1 + ProtoSessionID::SIZE
-                                          + PacketID::size(PacketID::LONG_FORM)
-                                          + hmac_size
-                                          // the following is the tls-crypt payload
-                                          + sizeof(char)  // length of ACK array
-                                          + sizeof(id_t); // reliable ID
-
-            // check that at least the authentication tag ``T`` is present
-            if (orig_size < (tls_frame_size + hmac_size))
-                return false;
-
-            // the ``WKc`` is just appended after the standard tls-crypt frame
-            const unsigned char *wkc_raw = orig_data + tls_frame_size;
-            const size_t wkc_raw_size = orig_size - tls_frame_size - sizeof(uint16_t);
-            // retrieve the ``WKc`` len from the bottom of the packet and convert it to Host Order
-            uint16_t wkc_len = ntohs(*(uint16_t *)(wkc_raw + wkc_raw_size));
-            // length sanity check (the size of the ``len`` field is included in the value)
-            if ((wkc_len - sizeof(uint16_t)) != wkc_raw_size)
-                return false;
-
-            BufferAllocated plaintext(wkc_len, BufferAllocated::CONSTRUCT_ZERO);
-            // plaintext will be used to compute the Auth Tag, therefore start by prepending
-            // the WKc length in network order
-            wkc_len = htons(wkc_len);
-            plaintext.write(&wkc_len, sizeof(wkc_len));
-            const size_t decrypt_bytes = proto.tls_crypt_server->decrypt(wkc_raw,
-                                                                         plaintext.data() + 2,
-                                                                         plaintext.max_size() - 2,
-                                                                         wkc_raw + hmac_size,
-                                                                         wkc_raw_size - hmac_size);
-            plaintext.inc_size(decrypt_bytes);
-            // decrypted data must at least contain a full 2048bits client key
-            // (metadata is optional)
-            if (plaintext.size() < OpenVPNStaticKey::KEY_SIZE)
-            {
-                proto.stats->error(Error::DECRYPT_ERROR);
-                if (proto.is_tcp())
-                    invalidate(Error::DECRYPT_ERROR);
-                return false;
-            }
-
-            if (!proto.tls_crypt_server->hmac_cmp(wkc_raw,
-                                                  0,
-                                                  plaintext.c_data(),
-                                                  plaintext.size()))
-            {
-                proto.stats->error(Error::HMAC_ERROR);
-                if (proto.is_tcp())
-                    invalidate(Error::HMAC_ERROR);
-                return false;
-            }
-
-            // we can now remove the WKc length from the plaintext, as it is not
-            // really part of the key material
-            plaintext.advance(sizeof(wkc_len));
-
-            // WKc has been authenticated: it contains the client key followed
-            // by the optional metadata. Let's initialize the tls-crypt context
-            // with the client key
-
-            OpenVPNStaticKey client_key;
-            plaintext.read(client_key.raw_alloc(), OpenVPNStaticKey::KEY_SIZE);
-            proto.reset_tls_crypt(*proto.config, client_key);
-
-            // verify metadata
-            int metadata_type = -1;
-            if (!plaintext.empty())
-                metadata_type = plaintext.pop_front();
-
-            if (!proto.tls_crypt_metadata->verify(metadata_type, plaintext))
-            {
-                proto.stats->error(Error::TLS_CRYPT_META_FAIL);
-                return false;
-            }
-
-            // virtually remove the WKc from the packet
-            recv.set_size(tls_frame_size);
-
-            return true;
+            return tls_crypt_v2_convertible(proto, pkt.opcode);
         }
 
         bool decapsulate(Packet &pkt) // called by ProtoStackBase
         {
+            const bool detect_tls_crypt_v2 = tls_crypt_v2_wanted(pkt);
+            const size_t tls_auth_hmac_size = proto.hmac_size;
+            const bool had_client_key = bool(proto.tls_crypt_recv);
+            bool authenticated = false;
+
+            pkt_from_peer = false;
+
             try
             {
-                switch (proto.tls_wrap_mode)
+                if (detect_tls_crypt_v2)
                 {
-                case TLS_AUTH:
-                    return decapsulate_tls_auth(pkt);
-                case TLS_CRYPT_V2:
-                    if (pkt.opcode == CONTROL_HARD_RESET_CLIENT_V3)
-                    {
-                        // unwrap WKc and extract Kc (client key) from packet.
-                        // This way we can initialize the tls-crypt per-client contexts
-                        // (this happens on the server side only)
-                        if (!unwrap_tls_crypt_wkc(*pkt.buf))
-                        {
-                            return false;
-                        }
-                    }
-                    // now that the tls-crypt contexts have been initialized it is
-                    // possible to proceed with the standard tls-crypt decapsulation
-                    /* no break */
-                case TLS_CRYPT:
-                    return decapsulate_tls_crypt(pkt);
-                case TLS_PLAIN:
-                    return decapsulate_tls_plain(pkt);
+                    // Create the server context the client's WKc is unwrapped with,
+                    // keyed only at unwrap time, when the WKc names its key. tls-crypt
+                    // session key setup is postponed to reception of the WKc too.
+                    proto.reset_tls_crypt_server(*proto.config);
+
+                    proto.tls_wrap_mode = TLS_CRYPT_V2;
+                    proto.hmac_size = proto.config->tls_crypt_context->digest_size();
+
+                    // init tls_crypt packet ID; the send half waits until the packet has
+                    // earned it, below, since putting the previous id back is not possible
+                    proto.ta_pid_recv.init("SSL-CC", 0, proto.stats);
                 }
+
+                authenticated = decapsulate_by_wrap_mode(pkt);
             }
-            catch (BufferException &)
+            catch (const BufferException &)
             {
                 proto.stats->error(Error::BUFFER_ERROR);
                 if (proto.is_tcp())
                     invalidate(Error::BUFFER_ERROR);
+            }
+
+            if (!pkt_from_peer && !had_client_key && proto.tls_crypt_recv)
+            {
+                // Drop a packet that's not ours.
+                proto.tls_crypt_send.reset();
+                proto.tls_crypt_recv.reset();
+                proto.tls_crypt_client_key.erase();
+            }
+
+            if (detect_tls_crypt_v2)
+            {
+                if (!pkt_from_peer)
+                {
+                    // Not our peer's packet, so leave the session as tls-auth had it. The
+                    // receive packet id needs no undoing: reset() initialises it the same
+                    // way and nothing of our peer's has moved it.
+                    proto.tls_wrap_mode = TLS_AUTH;
+                    proto.hmac_size = tls_auth_hmac_size;
+                }
+                else
+                {
+                    /** tls-auth/tls-crypt packet id. We start with a different id here
+                     * to indicate EARLY_NEG_START/CONTROL_WKC_V1 support */
+                    proto.ta_pid_send.init(EARLY_NEG_START);
+                }
+            }
+
+            return authenticated;
+        }
+
+        /**
+         * @brief Put the record a WKc carried to the embedder's hook, if it installed one
+         *
+         * Asked only once the WKc's Kc has authenticated the frame that carried it, which is
+         * the most this layer can say about where a record came from.
+         *
+         * @return whether the record is acceptable; a refusal ends the session.
+         */
+        bool verify_wkc_metadata(WkcMetadata &metadata)
+        {
+            if (!proto.config->tls_crypt_metadata_factory)
+                return true;
+
+            const TLSCryptMetadata::Ptr recorder = proto.config->tls_crypt_metadata_factory->new_obj();
+
+            if (recorder->verify(metadata.type, metadata.payload))
+            {
+                // this key was constructed before its WKc arrived
+                Base::set_sni_hint(recorder->sni_hint());
+                proto.tls_crypt_metadata = recorder;
+                return true;
+            }
+
+            proto.stats->error(Error::TLS_CRYPT_META_FAIL);
+
+            // Unconditional, unlike the drops above: this packet authenticated, so the
+            // session ended is the one the record belongs to. The key stays -- the
+            // decapsulation left an ACK to be wrapped.
+            invalidate(Error::TLS_CRYPT_META_FAIL);
+            return false;
+        }
+
+        /**
+         * @brief Decapsulate @p pkt with the wrap mode this session is in
+         *
+         * Split out of decapsulate() so that what the wrap mode decides stays separate from
+         * what every packet gets: the tls-crypt-v2 arm is the one with a step of its own,
+         * since on a server the key its frame is read with comes from the WKc the packet
+         * carries and from nowhere else.
+         *
+         * @return whether the packet yielded a message for the reliable receive layer. A
+         *  packet of our peer's carrying only ACKs authenticates and returns false, so this
+         *  is not the test for whether the sender is who it claims -- see pkt_from_peer.
+         */
+        bool decapsulate_by_wrap_mode(Packet &pkt)
+        {
+            switch (proto.tls_wrap_mode)
+            {
+            case TLS_AUTH:
+                return decapsulate_tls_auth(pkt);
+            case TLS_CRYPT_V2:
+                // The client key comes from this packet and nowhere else; later copies carry
+                // the WKc too and only need it stripped.
+                if (proto.is_server() && opcode_carries_wkc(pkt.opcode))
+                {
+                    if (!proto.tls_crypt_recv)
+                    {
+                        if (!proto.tls_crypt_server)
+                        {
+                            OVPN_LOG_VERBOSE(proto.debug_prefix()
+                                             << " DROPPING WKc WITH NO SERVER CONTEXT");
+                            return false;
+                        }
+
+                        UnwrappedWkc unwrapped;
+                        const Error::Type unwrap_wkc_result = unwrap_tls_crypt_wkc(*pkt.buf,
+                                                                                   *proto.config,
+                                                                                   *proto.tls_crypt_server,
+                                                                                   unwrapped);
+                        switch (unwrap_wkc_result)
+                        {
+                        case Error::DECRYPT_ERROR:
+                        case Error::HMAC_ERROR:
+                            proto.stats->error(unwrap_wkc_result);
+                            if (proto.is_tcp())
+                                invalidate(unwrap_wkc_result);
+                            return false;
+                        case Error::SUCCESS:
+                            break;
+                        default:
+                            return false;
+                        }
+
+                        // The WKc holds up under the server key, so the client key inside it
+                        // is one this server issued. Key the session with it.
+                        proto.tls_crypt_client_key = std::move(unwrapped.client_key);
+                        proto.reset_tls_crypt(*proto.config, proto.tls_crypt_client_key);
+
+                        // That says the WKc is ours, not that the sender holds the Kc inside:
+                        // a replayed one unwraps just as well. Only the frame verifying under
+                        // that Kc says so, hence decapsulate before judging the record.
+                        const bool authenticated = decapsulate_tls_crypt(pkt);
+
+                        if (pkt_from_peer && !verify_wkc_metadata(unwrapped.metadata))
+                            return false;
+
+                        return authenticated;
+                    }
+                    else if (!strip_resent_wkc(*pkt.buf, *proto.config))
+                    {
+                        proto.stats->error(Error::CC_ERROR);
+                        if (proto.is_tcp())
+                            invalidate(Error::CC_ERROR);
+                        return false;
+                    }
+                }
+                // now that the tls-crypt contexts have been initialized it is
+                // possible to proceed with the standard tls-crypt decapsulation
+                [[fallthrough]];
+            case TLS_CRYPT:
+                return decapsulate_tls_crypt(pkt);
+            case TLS_PLAIN:
+                return decapsulate_tls_plain(pkt);
             }
             return false;
         }
@@ -3283,8 +4295,7 @@ class ProtoContext
             Time::Duration d = next_time - *now;
             if (d.is_infinite())
                 return -1;
-            else
-                return d.to_seconds();
+            return numeric_cast<int>(d.to_seconds());
         }
 
         // BEGIN KeyContext data members
@@ -3299,6 +4310,8 @@ class ProtoContext
          * with third packet of the three-way handshake
          */
         bool resend_wkc = false;
+        //! Set per packet by accept_peer(), read by decapsulate()
+        bool pkt_from_peer = false;
         bool dirty;
         bool key_limit_renegotiation_fired;
         bool is_reliable;
@@ -3320,11 +4333,136 @@ class ProtoContext
         static BufferAllocated static_work;
     };
 
-  public:
+    class PsidCookieHelper
+    {
+      public:
+        PsidCookieHelper(unsigned int op_field)
+            : op_code_(opcode_extract(op_field)), key_id_(key_id_extract(op_field))
+        {
+        }
+
+        bool is_clients_initial_reset() const
+        {
+            return key_id_ == 0 && (op_code_ == CONTROL_HARD_RESET_CLIENT_V2 || op_code_ == CONTROL_HARD_RESET_CLIENT_V3);
+        }
+
+        //! Returns `true` if this is a TLS crypt V2 protocol packet.
+        bool is_tls_crypt_v2() const noexcept
+        {
+            return op_code_ == CONTROL_HARD_RESET_CLIENT_V3 || op_code_ == CONTROL_WKC_V1;
+        }
+
+        //! Returns `true` if the peer supports early negotiation (i.e. is able to reply with `CONTROL_WKC_V1`).
+        bool supports_early_negotiation(const PacketIDControl &pidc) const noexcept
+        {
+            return (pidc.id & EARLY_NEG_MASK) == EARLY_NEG_START;
+        }
+
+        //! Returns `true` if this could be the third packet of the 3-way handshake (tls-auth/none).
+        bool is_clients_handshake_ack_tls_auth() const
+        {
+            return key_id_ == 0 && (op_code_ == CONTROL_V1 || op_code_ == ACK_V1);
+        }
+
+        //! Returns `true` if this could be the third packet of the 3-way handshake (tls-crypt-v2).
+        bool is_clients_handshake_ack_tls_crypt_v2() const
+        {
+            return key_id_ == 0 && op_code_ == CONTROL_WKC_V1;
+        }
+
+        //! Returns `true` if the packet is a P_ACK_V1 (no own message-id field on the wire).
+        bool is_ack_v1() const
+        {
+            return op_code_ == ACK_V1;
+        }
+
+        //! Adds an {EARLY_NEG_FLAGS, 2, EARLY_NEG_FLAG_RESEND_WKC} TLV to a payload buffer (use with TLS crypt V2).
+        static void prepend_TLV(Buffer &payload)
+        {
+            // The only supported TLV payload for now.
+            const uint16_t type = htons(EARLY_NEG_FLAGS);
+            const uint16_t len = htons(sizeof(uint16_t));
+            const uint16_t flags = htons(EARLY_NEG_FLAG_RESEND_WKC);
+
+            payload.prepend(&flags, sizeof(flags));
+            payload.prepend(&len, sizeof(len));
+            payload.prepend(&type, sizeof(type));
+        }
+
+        static unsigned char get_server_hard_reset_opfield()
+        {
+            return op_compose(CONTROL_HARD_RESET_SERVER_V2, 0);
+        }
+
+      private:
+        const unsigned int op_code_;
+        const unsigned int key_id_;
+    };
+
+    class IvProtoHelper
+    {
+      public:
+        IvProtoHelper(const OptionList &peer_info)
+            : proto_field_(peer_info.get_num<unsigned int>("IV_PROTO", 1, 0))
+        {
+        }
+
+        bool client_supports_ekm_key_method() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_TLS_KEY_EXPORT;
+        }
+
+        bool client_supports_temp_auth_failed() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_AUTH_FAIL_TEMP;
+        }
+
+        bool client_supports_data_v2() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_DATA_V2;
+        }
+
+        bool client_supports_auth_pending_kwargs() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_AUTH_PENDING_KW;
+        }
+
+        bool client_supports_push_update() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_PUSH_UPDATE;
+        }
+
+        bool client_supports_request_push() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_REQUEST_PUSH;
+        }
+
+        //! Checks if the client is able to send an explicit EXIT message before exiting.
+        bool client_supports_exit_notify() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_CC_EXIT_NOTIFY;
+        }
+
+        //! Checks if the client can handle dynamic TLS-crypt.
+        bool client_supports_dynamic_tls_crypt() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_DYN_TLS_CRYPT;
+        }
+
+        //! Checks if the client can handle `dns` (as opposed to `dhcp-option`).
+        bool client_supports_dns_option() const
+        {
+            return proto_field_ & iv_proto_flag::IV_PROTO_DNS_OPTION_V2;
+        }
+
+      private:
+        unsigned int proto_field_;
+    };
+
     class TLSWrapPreValidate : public RC<thread_unsafe_refcount>
     {
       public:
-        typedef RCPtr<TLSWrapPreValidate> Ptr;
+        using Ptr = RCPtr<TLSWrapPreValidate>;
 
         virtual bool validate(const BufferAllocated &net_buf) = 0;
     };
@@ -3335,7 +4473,7 @@ class ProtoContext
       public:
         OPENVPN_SIMPLE_EXCEPTION(tls_auth_pre_validate);
 
-        TLSAuthPreValidate(const Config &c, const bool server)
+        TLSAuthPreValidate(const ProtoConfig &c, const bool server)
         {
             if (!c.tls_auth_enabled())
                 throw tls_auth_pre_validate();
@@ -3353,12 +4491,12 @@ class ProtoContext
                 const unsigned int key_dir = c.key_direction
                                                  ? OpenVPNStaticKey::INVERSE
                                                  : OpenVPNStaticKey::NORMAL;
-                ta_hmac_recv->init(c.tls_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir));
+                ta_hmac_recv->init(c.tls_auth_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir));
             }
             else
             {
                 // key-direction bidirectional mode
-                ta_hmac_recv->init(c.tls_key.slice(OpenVPNStaticKey::HMAC));
+                ta_hmac_recv->init(c.tls_auth_key.slice(OpenVPNStaticKey::HMAC));
             }
         }
 
@@ -3366,7 +4504,7 @@ class ProtoContext
         {
             try
             {
-                if (!net_buf.size())
+                if (net_buf.empty())
                     return false;
 
                 const unsigned int op = net_buf[0];
@@ -3375,11 +4513,11 @@ class ProtoContext
 
                 return ta_hmac_recv->ovpn_hmac_cmp(net_buf.c_data(),
                                                    net_buf.size(),
-                                                   1 + ProtoSessionID::SIZE,
+                                                   OPCODE_SIZE + ProtoSessionID::SIZE,
                                                    ta_hmac_recv->output_size(),
-                                                   PacketID::size(PacketID::LONG_FORM));
+                                                   PacketIDControl::size());
             }
-            catch (BufferException &)
+            catch (const BufferException &)
             {
             }
 
@@ -3396,21 +4534,38 @@ class ProtoContext
       public:
         OPENVPN_SIMPLE_EXCEPTION(tls_crypt_pre_validate);
 
-        TLSCryptPreValidate(const Config &c, const bool server)
+        TLSCryptPreValidate(const ProtoConfig &c, const bool server)
         {
-            if (!c.tls_crypt_enabled())
+            const bool tls_crypt_v2_enabled = c.tls_crypt_v2_enabled();
+
+            if (!c.tls_crypt_enabled() && !tls_crypt_v2_enabled)
                 throw tls_crypt_pre_validate();
 
             // save hard reset op we expect to receive from peer
-            reset_op = server ? CONTROL_HARD_RESET_CLIENT_V2 : CONTROL_HARD_RESET_SERVER_V2;
+            reset_op = CONTROL_HARD_RESET_SERVER_V2;
+
+            if (server)
+            {
+                // We can't pre-validate because we haven't extracted the server key from
+                // the server key ID that's present in the client key yet.
+                if (tls_crypt_v2_enabled && c.tls_crypt_v2_serverkey_id)
+                {
+                    disabled = true;
+                    return;
+                }
+
+                reset_op = tls_crypt_v2_enabled
+                               ? CONTROL_HARD_RESET_CLIENT_V3
+                               : CONTROL_HARD_RESET_CLIENT_V2;
+            }
 
             tls_crypt_recv = c.tls_crypt_context->new_obj_recv();
 
             // static direction assignment - not user configurable
             const unsigned int key_dir = server ? OpenVPNStaticKey::NORMAL : OpenVPNStaticKey::INVERSE;
             tls_crypt_recv->init(c.ssl_factory->libctx(),
-                                 c.tls_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir),
-                                 c.tls_key.slice(OpenVPNStaticKey::CIPHER | OpenVPNStaticKey::DECRYPT | key_dir));
+                                 c.tls_crypt_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir),
+                                 c.tls_crypt_key.slice(OpenVPNStaticKey::CIPHER | OpenVPNStaticKey::DECRYPT | key_dir));
 
             // needed to create the decrypt buffer during validation
             frame = c.frame;
@@ -3418,9 +4573,12 @@ class ProtoContext
 
         bool validate(const BufferAllocated &net_buf)
         {
+            if (disabled)
+                return true;
+
             try
             {
-                if (!net_buf.size())
+                if (net_buf.empty())
                     return false;
 
                 const unsigned int op = net_buf[0];
@@ -3450,7 +4608,7 @@ class ProtoContext
                                                 work.data(),
                                                 work.size());
             }
-            catch (BufferException &)
+            catch (const BufferException &)
             {
             }
             return false;
@@ -3463,30 +4621,16 @@ class ProtoContext
         TLSCryptInstance::Ptr tls_crypt_recv;
         Frame::Ptr frame;
         BufferAllocated work;
-    };
-
-    class TLSCryptV2PreValidate : public TLSCryptPreValidate
-    {
-      public:
-        OPENVPN_SIMPLE_EXCEPTION(tls_crypt_v2_pre_validate);
-
-        TLSCryptV2PreValidate(const Config &c, const bool server)
-            : TLSCryptPreValidate(c, server)
-        {
-            if (!c.tls_crypt_v2_enabled())
-                throw tls_crypt_v2_pre_validate();
-
-            // in case of server peer, we expect the new v3 packet type
-            if (server)
-                reset_op = CONTROL_HARD_RESET_CLIENT_V3;
-        }
+        bool disabled = false;
     };
 
     OPENVPN_SIMPLE_EXCEPTION(select_key_context_error);
 
-    ProtoContext(const Config::Ptr &config_arg,      // configuration
+    ProtoContext(ProtoContextCallbackInterface *cb_arg,
+                 const ProtoConfig::Ptr &config_arg, // configuration
                  const SessionStats::Ptr &stats_arg) // error stats
-        : config(config_arg),
+        : proto_callback(cb_arg),
+          config(config_arg),
           stats(stats_arg),
           mode_(config_arg->ssl_factory->mode()),
           n_key_ids(0),
@@ -3495,35 +4639,11 @@ class ProtoContext
         reset_tls_wrap_mode(*config);
     }
 
-    void reset_tls_wrap_mode(const Config &c)
+    void reset_tls_wrap_mode(const ProtoConfig &c)
     {
-        // tls-auth setup
-        if (c.tls_crypt_v2_enabled())
-        {
-            tls_wrap_mode = TLS_CRYPT_V2;
-
-            // get HMAC size from Digest object
-            hmac_size = c.tls_crypt_context->digest_size();
-        }
-        else if (c.tls_crypt_enabled())
-        {
-            tls_wrap_mode = TLS_CRYPT;
-
-            // get HMAC size from Digest object
-            hmac_size = c.tls_crypt_context->digest_size();
-        }
-        else if (c.tls_auth_enabled())
-        {
-            tls_wrap_mode = TLS_AUTH;
-
-            // get HMAC size from Digest object
-            hmac_size = c.tls_auth_context->size();
-        }
-        else
-        {
-            tls_wrap_mode = TLS_PLAIN;
-            hmac_size = 0;
-        }
+        const TLSWrapSelection sel = select_tls_wrap(c);
+        tls_wrap_mode = sel.mode;
+        hmac_size = sel.hmac_size;
     }
 
     uint32_t get_tls_warnings() const
@@ -3540,62 +4660,88 @@ class ProtoContext
         return is_bs64_cipher(conf().dc.cipher());
     }
 
-    void reset_tls_crypt(const Config &c, const OpenVPNStaticKey &key)
+    void reset_tls_crypt(const ProtoConfig &c, const OpenVPNStaticKey &key)
     {
-        tls_crypt_send = c.tls_crypt_context->new_obj_send();
-        tls_crypt_recv = c.tls_crypt_context->new_obj_recv();
-
-        // static direction assignment - not user configurable
-        unsigned int key_dir = is_server() ? OpenVPNStaticKey::NORMAL : OpenVPNStaticKey::INVERSE;
-
-        tls_crypt_send->init(c.ssl_factory->libctx(),
-                             key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::ENCRYPT | key_dir),
-                             key.slice(OpenVPNStaticKey::CIPHER | OpenVPNStaticKey::ENCRYPT | key_dir));
-        tls_crypt_recv->init(c.ssl_factory->libctx(),
-                             key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir),
-                             key.slice(OpenVPNStaticKey::CIPHER | OpenVPNStaticKey::DECRYPT | key_dir));
+        build_tls_crypt(c, is_server(), key, tls_crypt_send, tls_crypt_recv);
     }
 
-    void set_dynamic_tls_crypt(const Config &c, const KeyContext::Ptr &key_ctx)
+    void set_dynamic_tls_crypt(const ProtoConfig &c, const KeyContext::Ptr &key_ctx)
     {
+        // Both call sites fire on primary->key_id() == 0, which a duplicated -- or
+        // corrupted, then retransmitted -- soft reset satisfies twice. The switch below
+        // reads tls_wrap_mode, which this function ends by overwriting, so a second
+        // pass would land on TLS_CRYPT and mix c.tls_crypt_key: the wrong key, and on
+        // a tls_crypt_v2_serverkey_id server not a defined one. There is nothing new
+        // to derive anyway -- same TLS session, same exported material.
+        if (dynamic_tls_crypt_keyed)
+            return;
+
         OpenVPNStaticKey dyn_key;
         key_ctx->export_key_material(dyn_key, "EXPORTER-OpenVPN-dynamic-tls-crypt");
 
-        if (c.tls_auth_enabled() || c.tls_crypt_enabled() || c.tls_crypt_v2_enabled())
-            dyn_key.XOR(c.tls_key);
+        // The mode this session settled on, not what the config allows. A server holding
+        // both a tls-auth key and tls-crypt-v2 starts every session as TLS_AUTH and only
+        // decapsulate() converts it, so asking the config here would have such a server
+        // mix tls_auth_key while its converted tls-crypt-v2 client mixes Kc.
+        switch (tls_wrap_mode)
+        {
+        case TLS_AUTH:
+            dyn_key.XOR(c.tls_auth_key);
+            break;
+        case TLS_CRYPT_V2:
+            // Kc, this session's own: c.tls_crypt_key is the client's Kc on a client but the
+            // server key on a server, and with tls_crypt_v2_serverkey_id not even defined, so
+            // mixing it in would have the two ends derive different keys.
+            if (!tls_crypt_client_key.defined())
+                throw proto_error("dynamic tls-crypt with no tls-crypt-v2 client key");
+            dyn_key.XOR(tls_crypt_client_key);
+            break;
+        case TLS_CRYPT:
+            dyn_key.XOR(c.tls_crypt_key);
+            break;
+        case TLS_PLAIN:
+            break;
+        }
 
         tls_wrap_mode = TLS_CRYPT;
 
         // get HMAC size from Digest object
         hmac_size = c.tls_crypt_context->digest_size();
 
-        ta_pid_send.init(PacketID::LONG_FORM);
-        ta_pid_recv.init(c.pid_mode, PacketID::LONG_FORM, "SSL-CC", 0, stats);
+        ta_pid_send.init();
+        ta_pid_recv.init("SSL-CC", 0, stats);
 
         reset_tls_crypt(c, dyn_key);
+        dynamic_tls_crypt_keyed = true;
     }
 
-    void reset_tls_crypt_server(const Config &c)
+    void reset_tls_crypt_server(const ProtoConfig &c)
     {
-        // tls-crypt session key is derived later from WKc received from the client
-        tls_crypt_send.reset();
-        tls_crypt_recv.reset();
+        // The session key is derived from the WKc riding on the first packet we
+        // decapsulate, so there is nothing to install here -- see decapsulate(). Any key
+        // this session already holds is left alone: decapsulate() can bring us back here
+        // for a session already running, and dropping its contexts would leave the next
+        // control packet it sends with nothing to authenticate itself with.
 
-        // server context is used only to process incoming WKc's
+        // Server context, used only to process incoming WKc's. Left unkeyed:
+        // unwrap_tls_crypt_wkc() keys it, since only it knows which key the WKc needs.
         tls_crypt_server = c.tls_crypt_context->new_obj_recv();
-
-        // the server key is composed by one key set only, therefore direction and
-        // mode should not be specified when slicing
-        tls_crypt_server->init(c.ssl_factory->libctx(),
-                               c.tls_key.slice(OpenVPNStaticKey::HMAC),
-                               c.tls_key.slice(OpenVPNStaticKey::CIPHER));
-
-        tls_crypt_metadata = c.tls_crypt_metadata_factory->new_obj();
     }
 
-    void reset()
+    /**
+     * @brief Resets ProtoContext *this to it's initial state
+     *
+     * @param cookie_psid the ProtoSessionID parameter that allows a server
+     *  implementation using the psid cookie mechanism to pass in the verified hmac
+     *  server session cookie.  In the client implementation, the parameter is
+     *  meaningless and defaults to an empty ProtoSessionID which is created at compile
+     *  time since the default ProtoSessionID ctor is constexpr.  For the default
+     *  cookie_psid, defined() returns false (vs true for the verified session cookie)
+     *  so the absence of a parameter selects the correct code path.
+     */
+    void reset(const ProtoSessionID cookie_psid = ProtoSessionID())
     {
-        const Config &c = *config;
+        const ProtoConfig &c = *config;
 
         // defer data channel initialization until after client options pull?
         dc_deferred = c.dc_deferred;
@@ -3603,71 +4749,77 @@ class ProtoContext
         // clear key contexts
         reset_all();
 
+        // Drop the contexts a previous handshake set up: until the peer is known, no key may
+        // be left that could authenticate its packets. reset_tls_crypt_server() cannot do it,
+        // since decapsulate() also calls that for a session already running.
+        tls_crypt_send.reset();
+        tls_crypt_recv.reset();
+        tls_crypt_server.reset();
+        tls_crypt_client_key.erase();
+        tls_crypt_metadata.reset();
+        dynamic_tls_crypt_keyed = false;
+
         // start with key ID 0
         upcoming_key_id = 0;
-
-        unsigned int key_dir;
-        const PacketID::id_t EARLY_NEG_START = 0x0f000000;
 
         // tls-auth initialization
         reset_tls_wrap_mode(c);
         switch (tls_wrap_mode)
         {
         case TLS_CRYPT:
-            reset_tls_crypt(c, c.tls_key);
+            reset_tls_crypt(c, c.tls_crypt_key);
             // init tls_crypt packet ID
-            ta_pid_send.init(PacketID::LONG_FORM);
-            ta_pid_recv.init(c.pid_mode, PacketID::LONG_FORM, "SSL-CC", 0, stats);
+            ta_pid_send.init();
+            ta_pid_recv.init("SSL-CC", 0, stats);
             break;
         case TLS_CRYPT_V2:
             if (is_server())
-                // setup key to be used to unwrap WKc upon client connection.
-                // tls-crypt session key setup is postponed to reception of WKc
-                // from client
+                // Create the server context the client's WKc is unwrapped with,
+                // keyed only at unwrap time, when the WKc names its key. tls-crypt
+                // session key setup is postponed to reception of the WKc too.
                 reset_tls_crypt_server(c);
             else
-                reset_tls_crypt(c, c.tls_key);
+            {
+                // a client's own Kc, the one its WKc carries to the server
+                tls_crypt_client_key = c.tls_crypt_key;
+                reset_tls_crypt(c, tls_crypt_client_key);
+            }
             /** tls-auth/tls-crypt packet id. We start with a different id here
              * to indicate EARLY_NEG_START/CONTROL_WKC_V1 support */
             // init tls_crypt packet ID
-            ta_pid_send.init(PacketID::LONG_FORM, EARLY_NEG_START);
-            ta_pid_recv.init(c.pid_mode, PacketID::LONG_FORM, "SSL-CC", 0, stats);
+            ta_pid_send.init(EARLY_NEG_START);
+            ta_pid_recv.init("SSL-CC", 0, stats);
             break;
         case TLS_AUTH:
-            // init OvpnHMACInstance
-            ta_hmac_send = c.tls_auth_context->new_obj();
-            ta_hmac_recv = c.tls_auth_context->new_obj();
+            // init OvpnHMACInstance send + recv
+            build_tls_auth(c, ta_hmac_send, ta_hmac_recv);
 
-            // init tls_auth hmac
-            if (c.key_direction >= 0)
-            {
-                // key-direction is 0 or 1
-                key_dir = c.key_direction ? OpenVPNStaticKey::INVERSE : OpenVPNStaticKey::NORMAL;
-                ta_hmac_send->init(c.tls_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::ENCRYPT | key_dir));
-                ta_hmac_recv->init(c.tls_key.slice(OpenVPNStaticKey::HMAC | OpenVPNStaticKey::DECRYPT | key_dir));
-            }
-            else
-            {
-                // key-direction bidirectional mode
-                ta_hmac_send->init(c.tls_key.slice(OpenVPNStaticKey::HMAC));
-                ta_hmac_recv->init(c.tls_key.slice(OpenVPNStaticKey::HMAC));
-            }
-
-            // init tls_auth packet ID
-            ta_pid_send.init(PacketID::LONG_FORM);
-            ta_pid_recv.init(c.pid_mode, PacketID::LONG_FORM, "SSL-CC", 0, stats);
+            /**
+             * @brief Initialize tls_auth packet ID for the send case
+             *
+             * The second argument sets the expected packet id.  If the server
+             * implementation is using the psid cookie mechanism, the state creation is
+             * deferred until the client's second packet, id 1, is received; otherwise we
+             * expect to handle the 1st packet, id 0.
+             *
+             */
+            ta_pid_send.init(cookie_psid.defined() ? 1 : 0);
+            ta_pid_recv.init("SSL-CC", 0, stats);
             break;
         case TLS_PLAIN:
             break;
         }
 
         // initialize proto session ID
-        psid_self.randomize(*c.prng);
+        if (cookie_psid.defined())
+            psid_self = cookie_psid;
+        else
+            psid_self.randomize(*c.rng);
         psid_peer.reset();
 
         // initialize key contexts
-        primary.reset(new KeyContext(*this, is_client()));
-        OPENVPN_LOG_PROTO_VERBOSE(debug_prefix() << " New KeyContext PRIMARY id=" << primary->key_id());
+        primary.reset(new KeyContext(*this, is_client(), cookie_psid.defined()));
+        OVPN_LOG_VERBOSE(debug_prefix() << " New KeyContext PRIMARY id=" << primary->key_id());
 
         // initialize keepalive timers
         keepalive_expire = Time::infinite(); // initially disabled
@@ -3696,9 +4848,7 @@ class ProtoContext
         return bool(primary);
     }
 
-    virtual ~ProtoContext()
-    {
-    }
+    virtual ~ProtoContext() = default;
 
     // return the PacketType of an incoming network packet
     PacketType packet_type(const Buffer &buf)
@@ -3706,14 +4856,32 @@ class ProtoContext
         return PacketType(buf, *this);
     }
 
-    // start protocol negotiation
-    void start()
+    /**
+     * @brief Initialize the state machine and start protocol negotiation
+     *
+     * Called by both derived client and server protocol classes, this function hands
+     * off to the implementation in KeyContext::start()
+     *
+     * @param cookie_psid  see ProtoContext::reset()
+     */
+    void start(const ProtoSessionID cookie_psid = ProtoSessionID())
     {
         if (!primary)
             throw proto_error("start: no primary key");
-        primary->start();
+        primary->start(cookie_psid);
         update_last_received(); // set an upper bound on when we expect a response
     }
+
+#ifdef UNIT_TEST
+    // Test seam: pretend the server requested resending the tls-crypt-v2 WKc
+    // (EARLY_NEG_FLAG_RESEND_WKC), so the first control packet carrying SSL
+    // ciphertext is emitted as CONTROL_WKC_V1 with the WKc appended.
+    void force_resend_wkc()
+    {
+        if (primary)
+            primary->resend_wkc = true;
+    }
+#endif
 
     // trigger a protocol renegotiation
     void renegotiate()
@@ -3784,8 +4952,7 @@ class ProtoContext
             ret.min(keepalive_expire);
             return ret;
         }
-        else
-            return Time();
+        return Time();
     }
 
     // send app-level cleartext to remote peer
@@ -3797,7 +4964,7 @@ class ProtoContext
 
     void control_send(BufferAllocated &&app_buf)
     {
-        control_send(app_buf.move_to_ptr());
+        control_send(BufferAllocatedRc::Create(std::move(app_buf)));
     }
 
     // validate a control channel network packet
@@ -3807,15 +4974,6 @@ class ProtoContext
     }
 
     // pass received control channel network packets (ciphertext) into protocol object
-
-    bool control_net_recv(const PacketType &type, BufferAllocated &&net_buf)
-    {
-        Packet pkt(net_buf.move_to_ptr(), type.opcode);
-        if (type.is_soft_reset() && !renegotiate_request(pkt))
-            return false;
-        return select_key_context(type, true).net_recv(std::move(pkt));
-    }
-
     bool control_net_recv(const PacketType &type, BufferPtr &&net_bp)
     {
         Packet pkt(std::move(net_bp), type.opcode);
@@ -3824,10 +4982,22 @@ class ProtoContext
         return select_key_context(type, true).net_recv(std::move(pkt));
     }
 
+    /**
+        @brief pass received control channel network packets (ciphertext) into protocol object
+        @param type Packet type discriminator
+        @param net_buf Buffer containing the network packet
+        @return @c true if successfully processed, @c false if not
+        @note Implemented in terms of control_net_recv(const PacketType &type, BufferPtr &&net_bp)
+    */
+    bool control_net_recv(const PacketType &type, BufferAllocated &&net_buf)
+    {
+        return control_net_recv(type, BufferAllocatedRc::Create(std::move(net_buf)));
+    }
+
     // encrypt a data channel packet using primary KeyContext
     void data_encrypt(BufferAllocated &in_out)
     {
-        // OPENVPN_LOG_PROTO_VERBOSE(debug_prefix() << " DATA ENCRYPT size=" << in_out.size());
+        OVPN_LOG_DEBUG(debug_prefix() << " DATA ENCRYPT size=" << in_out.size());
         if (!primary)
             throw proto_error("data_encrypt: no primary key");
         primary->encrypt(in_out);
@@ -3839,12 +5009,12 @@ class ProtoContext
     {
         bool ret = false;
 
-        // OPENVPN_LOG_PROTO_VERBOSE(debug_prefix() << " DATA DECRYPT key_id=" << select_key_context(type, false).key_id() << " size=" << in_out.size());
+        OVPN_LOG_DEBUG(debug_prefix() << " DATA DECRYPT key_id=" << select_key_context(type, false).key_id() << " size=" << in_out.size());
 
         select_key_context(type, false).decrypt(in_out);
 
         // update time of most recent packet received
-        if (in_out.size())
+        if (!in_out.empty())
         {
             update_last_received();
             ret = true;
@@ -3942,7 +5112,7 @@ class ProtoContext
     }
 
     // Call on client with server-pushed options
-    void process_push(const OptionList &opt, const ProtoContextOptions &pco)
+    void process_push(const OptionList &opt, const ProtoContextCompressionOptions &pco)
     {
         // modify config with pushed options
         config->process_push(opt, pco);
@@ -3970,10 +5140,10 @@ class ProtoContext
                            unsigned int &keepalive_timeout)
     {
         keepalive_ping = config->keepalive_ping.enabled()
-                             ? config->keepalive_ping.to_seconds()
+                             ? clamp_to_typerange<std::remove_reference_t<decltype(keepalive_ping)>>(config->keepalive_ping.to_seconds())
                              : 0;
         keepalive_timeout = config->keepalive_timeout.enabled()
-                                ? config->keepalive_timeout.to_seconds()
+                                ? clamp_to_typerange<std::remove_reference_t<decltype(keepalive_timeout)>>(config->keepalive_timeout.to_seconds())
                                 : 0;
         config->keepalive_ping = Time::Duration::infinite();
         config->keepalive_timeout = Time::Duration::infinite();
@@ -4055,15 +5225,15 @@ class ProtoContext
     }
 
     // configuration
-    const Config &conf() const
+    const ProtoConfig &conf() const
     {
         return *config;
     }
-    Config &conf()
+    ProtoConfig &conf()
     {
         return *config;
     }
-    Config::Ptr conf_ptr() const
+    ProtoConfig::Ptr conf_ptr() const
     {
         return config;
     }
@@ -4074,26 +5244,21 @@ class ProtoContext
         return *stats;
     }
 
-  protected:
     // debugging
+    bool is_state_client_wait_reset_ack() const
+    {
+        return primary_state() == C_WAIT_RESET_ACK;
+    }
+
+  protected:
     int primary_state() const
     {
         if (primary)
             return primary->get_state();
-        else
-            return STATE_UNDEF;
+        return STATE_UNDEF;
     }
 
   private:
-    // TLS wrapping mode for the control channel
-    enum TLSWrapMode
-    {
-        TLS_PLAIN,
-        TLS_AUTH,
-        TLS_CRYPT,
-        TLS_CRYPT_V2
-    };
-
     void reset_all()
     {
         if (primary)
@@ -4102,32 +5267,11 @@ class ProtoContext
         secondary.reset();
     }
 
-    virtual void control_net_send(const Buffer &net_buf) = 0;
-
-    // app may take ownership of app_bp via std::move
-    virtual void control_recv(BufferPtr &&app_bp) = 0;
-
     // Called on client to request username/password credentials.
-    // Should be overriden by derived class if credentials are required.
-    // username and password should be written into buf with write_auth_string().
-    virtual void client_auth(Buffer &buf)
+    // delegated to the callback/parent
+    void client_auth(Buffer &buf)
     {
-        write_empty_string(buf); // username
-        write_empty_string(buf); // password
-    }
-
-    // Called on server with credentials and peer info provided by client.
-    // Should be overriden by derived class if credentials are required.
-    virtual void server_auth(const std::string &username,
-                             const SafeString &password,
-                             const std::string &peer_info,
-                             const AuthCert::Ptr &auth_cert)
-    {
-    }
-
-    // Called when KeyContext transitions to ACTIVE state
-    virtual void active(bool primary)
-    {
+        proto_callback->client_auth(buf);
     }
 
     void update_last_received()
@@ -4137,12 +5281,12 @@ class ProtoContext
 
     void net_send(const unsigned int key_id, const Packet &net_pkt)
     {
-        control_net_send(net_pkt.buffer());
+        proto_callback->control_net_send(net_pkt.buffer());
     }
 
     void app_recv(const unsigned int key_id, BufferPtr &&to_app_buf)
     {
-        control_recv(std::move(to_app_buf));
+        proto_callback->control_recv(std::move(to_app_buf));
     }
 
     // we're getting a request from peer to renegotiate.
@@ -4158,8 +5302,7 @@ class ProtoContext
             new_secondary_key(false);
             return true;
         }
-        else
-            return false;
+        return false;
     }
 
     // select a KeyContext (primary or secondary) for received network packets
@@ -4170,7 +5313,7 @@ class ProtoContext
         {
             if (flags == (PacketType::DEFINED) && primary)
                 return *primary;
-            else if (flags == (PacketType::DEFINED | PacketType::SECONDARY) && secondary)
+            if (flags == (PacketType::DEFINED | PacketType::SECONDARY) && secondary)
                 return *secondary;
         }
         else
@@ -4179,8 +5322,8 @@ class ProtoContext
             {
                 return *primary;
             }
-            else if (flags == (PacketType::DEFINED | PacketType::SECONDARY | PacketType::CONTROL)
-                     && secondary)
+            if (flags == (PacketType::DEFINED | PacketType::SECONDARY | PacketType::CONTROL)
+                && secondary)
             {
                 return *secondary;
             }
@@ -4196,7 +5339,7 @@ class ProtoContext
     // than the immediate rollover practiced by OpenVPN 2.x.
     KeyContext &select_control_send_context()
     {
-        OPENVPN_LOG_PROTO_VERBOSE(debug_prefix() << " CONTROL SEND");
+        OVPN_LOG_VERBOSE(debug_prefix() << " CONTROL SEND");
         if (!primary)
             throw proto_error("select_control_send_context: no primary key");
         return *primary;
@@ -4253,9 +5396,9 @@ class ProtoContext
     {
         // Create the secondary
         secondary.reset(new KeyContext(*this, initiator));
-        OPENVPN_LOG_PROTO_VERBOSE(debug_prefix()
-                                  << " New KeyContext SECONDARY id=" << secondary->key_id()
-                                  << (initiator ? " local-triggered" : " remote-triggered"));
+        OVPN_LOG_VERBOSE(debug_prefix()
+                         << " New KeyContext SECONDARY id=" << secondary->key_id()
+                         << (initiator ? " local-triggered" : " remote-triggered"));
     }
 
     // Promote a newly renegotiated KeyContext to primary status.
@@ -4268,7 +5411,7 @@ class ProtoContext
             primary->rekey(CryptoDCInstance::PRIMARY_SECONDARY_SWAP);
         if (secondary)
             secondary->prepare_expire();
-        OPENVPN_LOG_PROTO_VERBOSE(debug_prefix() << " PRIMARY_SECONDARY_SWAP");
+        OVPN_LOG_VERBOSE(debug_prefix() << " PRIMARY_SECONDARY_SWAP");
     }
 
     void process_primary_event()
@@ -4280,9 +5423,9 @@ class ProtoContext
             switch (ev)
             {
             case KeyContext::KEV_ACTIVE:
-                OPENVPN_LOG_PROTO_VERBOSE(debug_prefix() << " SESSION_ACTIVE");
+                OVPN_LOG_VERBOSE(debug_prefix() << " SESSION_ACTIVE");
                 primary->rekey(CryptoDCInstance::ACTIVATE_PRIMARY);
-                active(true);
+                proto_callback->active(true);
                 break;
             case KeyContext::KEV_RENEGOTIATE:
             case KeyContext::KEV_RENEGOTIATE_FORCE:
@@ -4322,7 +5465,7 @@ class ProtoContext
                 secondary->rekey(CryptoDCInstance::NEW_SECONDARY);
                 if (primary)
                     primary->prepare_expire();
-                active(false);
+                proto_callback->active(false);
                 break;
             case KeyContext::KEV_BECOME_PRIMARY:
                 if (!secondary->invalidated())
@@ -4339,6 +5482,7 @@ class ProtoContext
                 break;
             case KeyContext::KEV_NEGOTIATE:
                 stats->error(Error::HANDSHAKE_TIMEOUT);
+                [[fallthrough]];
             case KeyContext::KEV_PRIMARY_PENDING:
             case KeyContext::KEV_RENEGOTIATE_FORCE:
                 renegotiate();
@@ -4391,16 +5535,16 @@ class ProtoContext
             keepalive_xmit = kx;
     }
 
-    void tls_crypt_append_wkc(BufferAllocated &dst)
-    {
-        if (!config->wkc.defined())
-            throw proto_error("Client Key Wrapper undefined");
-        dst.append(config->wkc);
-    }
-
     // BEGIN ProtoContext data members
 
-    Config::Ptr config;
+    /** the class that uses this class needs to be called back on a few things. Typically a class
+     * that uses this class as field for composition. This parent/callback class needs to ensure that
+     * it lives longer than this class, e.g. by having this class as field as this class blindly
+     * assumes that this pointer is always valid for its lifetime
+     */
+    ProtoContextCallbackInterface *proto_callback;
+
+    ProtoConfig::Ptr config;
     SessionStats::Ptr stats;
 
     size_t hmac_size;
@@ -4422,10 +5566,37 @@ class ProtoContext
     TLSCryptInstance::Ptr tls_crypt_recv;
 
     TLSCryptInstance::Ptr tls_crypt_server;
+
+    /**
+     * @brief Kc, the tls-crypt-v2 client key this session's control channel is keyed with
+     *
+     * Per session: a server has one per client, unwrapped from that client's WKc, where
+     * ProtoConfig::tls_crypt_key holds the server key every WKc is wrapped with -- or, with
+     * tls_crypt_v2_serverkey_id, nothing at all. A client has only its own. The contexts
+     * above do the encrypting; this is kept because set_dynamic_tls_crypt() has to mix the
+     * same key in at both ends.
+     */
+    OpenVPNStaticKey tls_crypt_client_key;
+
+    /**
+     * @brief The metadata hook that accepted this session's WKc, or null
+     *
+     * Kept for its sni_hint(): only the first key comes with a WKc, and every
+     * renegotiated one must select the same SNI context.
+     */
     TLSCryptMetadata::Ptr tls_crypt_metadata;
 
-    PacketIDSend ta_pid_send;
-    PacketIDReceive ta_pid_recv;
+    /**
+     * @brief Whether set_dynamic_tls_crypt() has keyed this session already
+     *
+     * Makes it idempotent: it derives from the wrap mode it then overwrites, so only the
+     * first call for a session may derive, and later ones must leave the key installed.
+     * Cleared with the contexts in reset().
+     */
+    bool dynamic_tls_crypt_keyed = false;
+
+    PacketIDControlSend ta_pid_send;
+    PacketIDControlReceive ta_pid_recv;
 
     ProtoSessionID psid_self;
     ProtoSessionID psid_peer;

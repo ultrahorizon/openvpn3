@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Method to generate a Frame object for typical OpenVPN usage
 
@@ -36,10 +26,10 @@ inline Frame::Ptr frame_init(const bool align_adjust_3_1,
                              const bool verbose)
 {
     const size_t payload = std::max(tun_mtu_max + 512, size_t(2048));
-    const size_t headroom = 512;
-    const size_t tailroom = 512;
-    const size_t align_block = 16;
-    const unsigned int buffer_flags = 0;
+    constexpr size_t headroom = 512;
+    constexpr size_t tailroom = 512;
+    constexpr size_t align_block = 16;
+    constexpr BufferFlags buffer_flags = BufAllocFlags::NO_FLAGS;
 
     Frame::Ptr frame(new Frame(Frame::Context(headroom, payload, tailroom, 0, align_block, buffer_flags)));
     if (align_adjust_3_1)
@@ -58,22 +48,22 @@ inline Frame::Ptr frame_init(const bool align_adjust_3_1,
                                                           tailroom,
                                                           0,
                                                           align_block,
-                                                          BufferAllocated::GROW);
+                                                          BufAllocFlags::GROW);
     frame->standardize_capacity(~0);
 
     if (verbose)
         OPENVPN_LOG("Frame=" << headroom << '/' << payload << '/' << tailroom
-                             << " mssfix-ctrl=" << (*frame)[Frame::READ_BIO_MEMQ_STREAM].payload());
+                             << " control-channel-payload=" << (*frame)[Frame::READ_BIO_MEMQ_STREAM].payload());
 
     return frame;
 }
 
 inline Frame::Context frame_init_context_simple(const size_t payload)
 {
-    const size_t headroom = 512;
-    const size_t tailroom = 512;
-    const size_t align_block = 16;
-    const unsigned int buffer_flags = 0;
+    constexpr size_t headroom = 512;
+    constexpr size_t tailroom = 512;
+    constexpr size_t align_block = 16;
+    constexpr BufferFlags buffer_flags = BufAllocFlags::NO_FLAGS;
     return Frame::Context(headroom, payload, tailroom, 0, align_block, buffer_flags);
 }
 

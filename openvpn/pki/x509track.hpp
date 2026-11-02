@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_PKI_X509TRACK_H
 #define OPENVPN_PKI_X509TRACK_H
@@ -31,8 +21,7 @@
 #include <openvpn/common/string.hpp>
 #include <openvpn/common/to_string.hpp>
 
-namespace openvpn {
-namespace X509Track {
+namespace openvpn::X509Track {
 
 enum Type
 {
@@ -71,8 +60,7 @@ inline const char *name(const Type type)
     static_assert(N_TYPES == array_size(names), "x509 names array inconsistency");
     if (type >= 0 && type < N_TYPES)
         return names[type];
-    else
-        return "UNDEF";
+    return "UNDEF";
 }
 
 inline Type parse_type(const std::string &name)
@@ -93,7 +81,7 @@ struct Config
 
     Config(const std::string &spec)
     {
-        full_chain = (spec.length() > 0 && spec[0] == '+');
+        full_chain = (!spec.empty() && spec[0] == '+');
         type = parse_type(spec.substr(full_chain ? 1 : 0));
         if (type == UNDEF)
             throw Exception("cannot parse attribute '" + spec + "'");
@@ -119,9 +107,7 @@ struct Config
 
 struct ConfigSet : public std::vector<Config>
 {
-    ConfigSet()
-    {
-    }
+    ConfigSet() = default;
 
     ConfigSet(const OptionList &opt,
               const bool include_serial,
@@ -229,7 +215,6 @@ struct Set : public std::vector<KeyValue>
     }
 };
 
-} // namespace X509Track
-} // namespace openvpn
+} // namespace openvpn::X509Track
 
 #endif

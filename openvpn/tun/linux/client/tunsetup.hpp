@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Client tun interface for Linux.
 
@@ -47,8 +37,7 @@
 #include <openvpn/tun/client/tunconfigflags.hpp>
 #include <openvpn/netconf/linux/gw.hpp>
 
-namespace openvpn {
-namespace TunLinuxSetup {
+namespace openvpn::TunLinuxSetup {
 
 OPENVPN_EXCEPTION(tun_linux_error);
 OPENVPN_EXCEPTION(tun_open_error);
@@ -63,16 +52,14 @@ template <class TUNMETHODS>
 class Setup : public TunBuilderSetup::Base
 {
   public:
-    typedef RCPtr<Setup> Ptr;
+    using Ptr = RCPtr<Setup>;
 
     // This empty constructor shouldn't be needed, but due to a
     // plausible compiler bug in GCC 4.8.5 (RHEL 7), this empty
     // constructor is required to be able to build.  This is
     // related to the member initialization of the private
     // remove_cmds_bypass_gw and remove_cmds class members.
-    Setup()
-    {
-    }
+    Setup() = default;
 
     struct Config : public TunBuilderSetup::Config
     {
@@ -84,7 +71,7 @@ class Setup : public TunBuilderSetup::Base
         bool dco = false;
 
 #ifdef HAVE_JSON
-        virtual Json::Value to_json() override
+        Json::Value to_json() override
         {
             Json::Value root(Json::objectValue);
             root["iface_name"] = Json::Value(iface_name);
@@ -95,7 +82,7 @@ class Setup : public TunBuilderSetup::Base
             return root;
         };
 
-        virtual void from_json(const Json::Value &root, const std::string &title) override
+        void from_json(const Json::Value &root, const std::string &title) override
         {
             json::assert_dict(root, title);
             json::to_string(root, iface_name, "iface_name", title);
@@ -128,7 +115,7 @@ class Setup : public TunBuilderSetup::Base
         remove_cmds_bypass_gw->execute(os);
         remove_cmds_bypass_gw->clear();
 
-        ActionList::Ptr add_cmds = new ActionList();
+        const ActionList::Ptr add_cmds = new ActionList();
         TUNMETHODS::add_bypass_route(tun_iface_name, address, ipv6, nullptr, *add_cmds, *remove_cmds_bypass_gw);
 
         // add gateway bypass route
@@ -157,7 +144,7 @@ class Setup : public TunBuilderSetup::Base
             tun_iface_name = conf->iface_name;
         }
 
-        ActionList::Ptr add_cmds = new ActionList();
+        const ActionList::Ptr add_cmds = new ActionList();
         ActionList::Ptr remove_cmds_new = new ActionListReversed();
 
         // configure tun properties
@@ -208,7 +195,7 @@ class Setup : public TunBuilderSetup::Base
         if (conf->txqueuelen)
         {
             struct ifreq netifr;
-            ScopedFD ctl_fd(socket(AF_INET, SOCK_DGRAM, 0));
+            const ScopedFD ctl_fd(socket(AF_INET, SOCK_DGRAM, 0));
 
             if (ctl_fd.defined())
             {
@@ -264,7 +251,6 @@ class Setup : public TunBuilderSetup::Base
 
     std::string tun_iface_name; // used to skip tun-based default gw when add bypass route
 };
-} // namespace TunLinuxSetup
-} // namespace openvpn
+} // namespace openvpn::TunLinuxSetup
 
 #endif // OPENVPN_TUN_LINUX_CLIENT_TUNCLI_H

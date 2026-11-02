@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_CLIENT_CLIHALT_H
 #define OPENVPN_CLIENT_CLIHALT_H
@@ -29,7 +19,6 @@
 #include <openvpn/common/exception.hpp>
 #include <openvpn/common/split.hpp>
 #include <openvpn/common/unicode.hpp>
-#include <openvpn/common/string.hpp>
 
 // Process halt/restart messages from server:
 //   HALT,<client_reason>        -> disconnect
@@ -39,7 +28,7 @@
 namespace openvpn {
 class ClientHalt
 {
-    typedef std::vector<std::string> StringList;
+    using StringList = std::vector<std::string>;
 
   public:
     OPENVPN_SIMPLE_EXCEPTION(client_halt_error);
@@ -60,7 +49,7 @@ class ClientHalt
         if (sl.size() >= 2)
         {
             size_t reason_pos = 0;
-            if (restart_ && string::starts_with(sl[1], "[P]:"))
+            if (restart_ && sl[1].starts_with("[P]:"))
             {
                 psid_ = true;
                 reason_pos = 4;
@@ -112,12 +101,12 @@ class ClientHalt
 
     static bool is_halt(const StringList &sl)
     {
-        return sl.size() >= 1 && sl[0] == "HALT";
+        return !sl.empty() && sl[0] == "HALT";
     }
 
     static bool is_restart(const StringList &sl)
     {
-        return sl.size() >= 1 && sl[0] == "RESTART";
+        return !sl.empty() && sl[0] == "RESTART";
     }
 
     bool restart_ = false;

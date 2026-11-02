@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_AUTH_AUTHCREDS
 #define OPENVPN_AUTH_AUTHCREDS
@@ -38,7 +28,7 @@ namespace openvpn {
 class AuthCreds : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<AuthCreds> Ptr;
+    using Ptr = RCPtr<AuthCreds>;
 
     AuthCreds(std::string &&username_arg,
               SafeString &&password_arg,
@@ -84,17 +74,17 @@ class AuthCreds : public RC<thread_unsafe_refcount>
     std::string to_string() const
     {
         std::ostringstream os;
-        os << "*** AuthCreds ***" << std::endl;
-        os << "user: '" << username << "'" << std::endl;
+        os << "*** AuthCreds ***\n";
+        os << "user: '" << username << "'\n";
         if (password.empty())
         {
-            os << "pass: (empty)" << std::endl;
+            os << "pass: (empty)\n";
         }
         else
         {
-            os << "pass: (non-empty)" << std::endl;
+            os << "pass: (non-empty)\n";
         }
-        os << "peer info:" << std::endl;
+        os << "peer info:\n";
         os << peer_info.render(Option::RENDER_BRACKET | Option::RENDER_NUMBER);
         return os.str();
     }

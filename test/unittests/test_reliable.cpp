@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <openvpn/common/size.hpp>
 #include <openvpn/common/exception.hpp>
@@ -18,11 +18,15 @@
 #include <openvpn/reliable/relrecv.hpp>
 #include <openvpn/reliable/relsend.hpp>
 #include <openvpn/reliable/relack.hpp>
-#include <openvpn/crypto/packet_id.hpp>
+#include <openvpn/crypto/packet_id_control.hpp>
 
 using namespace openvpn;
 
-TEST(reliable, ack)
+namespace PacketID {
+using id_t = openvpn::reliable::id_t;
+}
+
+TEST(Reliable, Ack)
 {
     std::string expected{"0400000021000000160000000b00000001\n"};
     std::ostringstream actual;
@@ -41,24 +45,24 @@ TEST(reliable, ack)
     ack.push_back(0x99);
     ack.push_back(0x100);
 
-    BufferAllocated buf(256, 0);
+    BufferAllocated buf(256);
     buf.init_headroom(128);
     ack.prepend(buf, false);
-    actual << render_hex_generic(buf) << std::endl;
+    actual << render_hex_generic(buf) << '\n';
     EXPECT_EQ(actual.str(), expected);
 
     std::string expected2{"080000002100000100000000990000008800000077000000660000005500000044\n"};
 
     std::ostringstream actual2;
 
-    BufferAllocated buf2(256, 0);
+    BufferAllocated buf2(256);
     buf2.init_headroom(128);
     ack.prepend(buf2, true);
-    actual2 << render_hex_generic(buf2) << std::endl;
+    actual2 << render_hex_generic(buf2) << '\n';
     EXPECT_EQ(actual2.str(), expected2);
 }
 
-TEST(reliable, ack_dup)
+TEST(Reliable, AckDup)
 {
     std::ostringstream actual;
     ReliableAck ack{};
@@ -70,12 +74,12 @@ TEST(reliable, ack_dup)
 
     std::string expected{"0400000004000000030000000200000001\n"};
 
-    BufferAllocated buf(256, 0);
+    BufferAllocated buf(256);
     buf.init_headroom(128);
     ack.prepend(buf, false);
-    actual << render_hex_generic(buf) << std::endl;
+    actual << render_hex_generic(buf) << '\n';
     EXPECT_EQ(actual.str(), expected);
-    EXPECT_EQ(ack.resend_size(), 4u);
+    EXPECT_EQ(ack.resend_size(), 4U);
 
     ack.push_back(3);
     ack.push_back(6);
@@ -83,38 +87,36 @@ TEST(reliable, ack_dup)
     actual.str("");
     std::string expected2{"0400000002000000040000000600000003\n"};
 
-    BufferAllocated buf2(256, 0);
+    BufferAllocated buf2(256);
     buf2.init_headroom(128);
 
     ack.prepend(buf2, false);
-    actual << render_hex_generic(buf2) << std::endl;
+    actual << render_hex_generic(buf2) << '\n';
     EXPECT_EQ(actual.str(), expected2);
     /* The duplicate 3 should have be there only once */
-    EXPECT_EQ(ack.resend_size(), 5u);
+    EXPECT_EQ(ack.resend_size(), 5U);
 
     actual.str("");
-    BufferAllocated buf3(256, 0);
+    BufferAllocated buf3(256, BufAllocFlags::NO_FLAGS);
     buf3.init_headroom(128);
     ack.prepend(buf3, false);
 
-    actual << render_hex_generic(buf3) << std::endl;
+    actual << render_hex_generic(buf3) << '\n';
 
     std::string expected3{"0400000002000000040000000300000006\n"};
     EXPECT_EQ(actual.str(), expected3);
 }
 
-TEST(reliable, simple_packet)
+TEST(Reliable, SimplePacket)
 {
-    std::ostringstream actual;
     ReliableAck ack{};
 
-    BufferAllocated buf(256, 0);
+    BufferAllocated buf(256);
     buf.init_headroom(128);
 
     ack.push_back(0);
 
     ack.prepend(buf, false);
-
 
     ack.push_back(1);
     ack.push_back(2);
@@ -122,15 +124,12 @@ TEST(reliable, simple_packet)
 }
 
 
-typedef PacketID::id_t id_t;
-
 OPENVPN_SIMPLE_EXCEPTION(receive_sequence);
 
 struct Packet
 {
-    Packet()
-    {
-    }
+    Packet() = default;
+
     explicit Packet(const BufferPtr &buf_arg)
         : buf(buf_arg)
     {
@@ -147,24 +146,24 @@ struct Packet
     BufferPtr buf;
 };
 
-typedef ReliableSendTemplate<Packet> ReliableSend;
-typedef ReliableRecvTemplate<Packet> ReliableRecv;
+using ReliableSend = ReliableSendTemplate<Packet>;
+using ReliableRecv = ReliableRecvTemplate<Packet>;
 
 struct Message
 {
-    id_t id;
+    openvpn::PacketIDControl::id_t id;
     BufferPtr buffer;
 };
 
 void print_msg(const Time::Duration t,
                const char *title,
                BufferPtr &buf,
-               const id_t id,
+               const openvpn::PacketIDControl::id_t id,
                std::stringstream &case_detail)
 {
     case_detail << t.raw() << ' ' << title
                 << '[' << id << "] " << (char *)buf->data()
-                << std::endl;
+                << '\n';
 }
 
 
@@ -173,7 +172,7 @@ void test(MTRand &rand,
           const Time::Duration end,
           const Time::Duration step,
           const Time::Duration end_sends,
-          const id_t relsize,
+          const openvpn::PacketIDControl::id_t relsize,
           const size_t wiresize,
           const unsigned int reorder_prob,
           const unsigned int drop_prob,
@@ -191,8 +190,8 @@ void test(MTRand &rand,
     long iterations = 0;
     Time::Duration t;
 
-    id_t send_id = 0;
-    id_t rec_id = 0;
+    openvpn::PacketIDControl::id_t send_id = 0;
+    openvpn::PacketIDControl::id_t rec_id = 0;
 
     for (t = Time::Duration(); t < end; t += step)
     {
@@ -202,24 +201,24 @@ void test(MTRand &rand,
         // sender processes ACKs received from receiver
         while (!acklist.empty())
         {
-            const id_t id = acklist.front();
+            const openvpn::PacketIDControl::id_t id = acklist.front();
             acklist.pop_front();
             if (rand.randrange(40)) // with small probability, simulate a dropped ACK
                                     // JMD_TODO: why wouldn't this have drop_prob probability
             {
-                case_detail << t.raw() << " ACK [" << id << "]" << std::endl;
+                case_detail << t.raw() << " ACK [" << id << "]\n";
                 send.ack(id);
             }
             else
             {
-                case_detail << t.raw() << " Simulate dropped ACK [" << id << "]" << std::endl;
+                case_detail << t.raw() << " Simulate dropped ACK [" << id << "]\n";
             }
         }
 
         // scan the sender history for un-ACKed packets that need to be retransmitted
         if (now >= retrans)
         {
-            for (id_t i = send.head_id(); i < send.tail_id(); ++i)
+            for (openvpn::PacketIDControl::id_t i = send.head_id(); i < send.tail_id(); ++i)
             {
                 ReliableSend::Message &m = send.ref_by_id(i);
                 if (m.ready_retransmit(now))
@@ -246,7 +245,7 @@ void test(MTRand &rand,
             std::ostringstream os;
             os << "Test packet #" << count;
             const std::string s = os.str();
-            BufferPtr buffer(new BufferAllocated((unsigned char *)s.c_str(), s.length() + 1, 0));
+            auto buffer = BufferAllocatedRc::Create((unsigned char *)s.c_str(), s.length() + 1, BufAllocFlags::NO_FLAGS);
             ReliableSend::Message &m = send.send(now, Time::Duration());
             m.packet.buf = buffer;
             Message msg;
@@ -267,7 +266,7 @@ void test(MTRand &rand,
                 {
                     case_detail << t.raw()
                                 << " Simulate packet reordering "
-                                << i1 << " <-> " << i2 << std::endl;
+                                << i1 << " <-> " << i2 << '\n';
                     std::swap(wire[i1], wire[i2]);
                 }
             }
@@ -279,7 +278,7 @@ void test(MTRand &rand,
             Message msg = wire.front();
             wire.pop_front();
 
-            case_detail << t.raw() << " Received packet [" << msg.id << "]" << std::endl;
+            case_detail << t.raw() << " Received packet [" << msg.id << "]\n";
 
             // simulate dropped packet
             if (rand.randrange(drop_prob))
@@ -292,7 +291,7 @@ void test(MTRand &rand,
             else
             {
                 case_detail << t.raw()
-                            << " Simulate dropped packet [" << msg.id << "]" << std::endl;
+                            << " Simulate dropped packet [" << msg.id << "]\n";
             }
         }
 
@@ -303,8 +302,7 @@ void test(MTRand &rand,
             print_msg(t, "RECV", m.packet.buf, m.id(), case_detail);
             if (m.id() != rec_id)
                 throw receive_sequence();
-            else
-                rec_id = m.id() + 1;
+            rec_id = m.id() + 1;
 
             recv.advance();
         }
@@ -316,8 +314,7 @@ void test(MTRand &rand,
                 << " final_t=" << t.raw()
                 << " iterations=" << iterations
                 << " count=" << count
-                << " [" << send_id << '/' << (rec_id ? rec_id - 1 : 0) << ']'
-                << std::endl;
+                << " [" << send_id << '/' << (rec_id ? rec_id - 1 : 0) << "]\n";
     if (send_id != (rec_id ? rec_id - 1 : 0))
         throw receive_sequence();
 }
@@ -325,20 +322,20 @@ void test(MTRand &rand,
 struct test_params
 {
     int test_case;
-    id_t relsize;
+    openvpn::PacketIDControl::id_t relsize;
     size_t wiresize;
     unsigned int reorder_prob;
     unsigned int drop_prob;
 };
 
-TEST(reliable, simulation)
+TEST(Reliable, Simulation)
 {
     MTRand rand;
     std::vector<test_params> sim_cases = {
-        {1, 4, 4, 10, 16},
-        {2, 2, 4, 10, 16},
-        {3, 4, 8, 10, 16},
-        {4, 4, 4, 2, 2},
+        {.test_case = 1, .relsize = 4, .wiresize = 4, .reorder_prob = 10, .drop_prob = 16},
+        {.test_case = 2, .relsize = 2, .wiresize = 4, .reorder_prob = 10, .drop_prob = 16},
+        {.test_case = 3, .relsize = 4, .wiresize = 8, .reorder_prob = 10, .drop_prob = 16},
+        {.test_case = 4, .relsize = 4, .wiresize = 4, .reorder_prob = 2, .drop_prob = 2},
     };
     const Time::Duration end = Time::Duration::seconds(1000);
     const Time::Duration step = Time::Duration::binary_ms(100);
@@ -349,7 +346,7 @@ TEST(reliable, simulation)
         std::stringstream case_detail;
         try
         {
-            case_detail << "Test case " << sim_case.test_case << std::endl;
+            case_detail << "Test case " << sim_case.test_case << '\n';
             test(rand,
                  base,
                  end,
@@ -374,7 +371,7 @@ TEST(reliable, simulation)
 // to show the ranges of test parameters, relsize, wiresize, reorder_prob, and
 // drop_prob that the original author inttended
 
-TEST(reliable, test1)
+TEST(Reliable, Test1)
 {
   MTRand rand;
   const Time base = Time::now();
@@ -384,7 +381,7 @@ TEST(reliable, test1)
   test(rand, base, end, step, end_sends, 4, 4, 10, 16);
 }
 
-TEST(reliable, test2)
+TEST(Reliable, Test2)
 {
   MTRand rand;
   const Time base = Time::now();

@@ -4,27 +4,17 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_COMMON_TEMPFILE_H
 #define OPENVPN_COMMON_TEMPFILE_H
 
 #include <openvpn/common/platform.hpp>
 
-#if defined(OPENVPN_PLATFORM_WIN)
+#ifdef OPENVPN_PLATFORM_WIN
 #error temporary file methods not supported on Windows
 #endif
 
@@ -38,10 +28,13 @@
 #include <memory>
 
 #include <openvpn/common/exception.hpp>
+#include <openvpn/common/numeric_cast.hpp>
 #include <openvpn/common/scoped_fd.hpp>
 #include <openvpn/common/write.hpp>
 #include <openvpn/common/strerror.hpp>
 #include <openvpn/buffer/bufread.hpp>
+
+using openvpn::numeric_util::numeric_cast;
 
 namespace openvpn {
 class TempFile
@@ -54,13 +47,17 @@ class TempFile
         : fn(new char[fn_template.length() + 1]),
           del(fn_delete)
     {
+        constexpr char pattern[] = "XXXXXX";
+        constexpr size_t patternLen = sizeof(pattern) - 1;
         std::memcpy(fn.get(), fn_template.c_str(), fn_template.length() + 1);
-        const size_t pos = fn_template.find("XXXXXX");
+        const size_t pos = fn_template.rfind(pattern);
         if (pos != std::string::npos)
         {
-            const int suffixlen = fn_template.length() - pos - 6;
-            if (suffixlen > 0)
-                fd.reset(::mkstemps(fn.get(), suffixlen));
+            if (fn_template.length() > pos + patternLen)
+            {
+                const auto suffixlen = fn_template.length() - pos - patternLen;
+                fd.reset(::mkstemps(fn.get(), numeric_cast<int>(suffixlen)));
+            }
             else
                 fd.reset(::mkstemp(fn.get()));
             if (!fd.defined())
@@ -125,8 +122,7 @@ class TempFile
     {
         if (fn)
             return fn.get();
-        else
-            return "";
+        return "";
     }
 
     void close_file()

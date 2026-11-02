@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -26,23 +16,22 @@
 
 #include <openvpn/acceptor/base.hpp>
 
-namespace openvpn {
-namespace Acceptor {
+namespace openvpn::Acceptor {
 
-struct Unix : public Base
+struct Unix : Base
 {
     OPENVPN_EXCEPTION(unix_acceptor_error);
 
-    typedef RCPtr<Unix> Ptr;
+    using Ptr = RCPtr<Unix>;
 
     Unix(openvpn_io::io_context &io_context)
         : acceptor(io_context)
     {
     }
 
-    virtual void async_accept(ListenerBase *listener,
-                              const size_t acceptor_index,
-                              openvpn_io::io_context &io_context) override
+    void async_accept(ListenerBase *listener,
+                      const size_t acceptor_index,
+                      openvpn_io::io_context &io_context) override
     {
         AsioPolySock::Unix::Ptr sock(new AsioPolySock::Unix(io_context, acceptor_index));
         acceptor.async_accept(sock->socket,
@@ -50,7 +39,7 @@ struct Unix : public Base
                               { listener->handle_accept(std::move(sock), error); });
     }
 
-    virtual void close() override
+    void close() override
     {
         acceptor.close();
     }
@@ -67,7 +56,7 @@ struct Unix : public Base
     {
         if (unix_mode)
         {
-            if (::chmod(socket_path.c_str(), unix_mode) < 0)
+            if (chmod(socket_path.c_str(), unix_mode) < 0)
                 throw unix_acceptor_error("chmod failed on unix socket");
         }
     }
@@ -76,5 +65,4 @@ struct Unix : public Base
     openvpn_io::basic_socket_acceptor<openvpn_io::local::stream_protocol> acceptor;
 };
 
-} // namespace Acceptor
-} // namespace openvpn
+} // namespace openvpn::Acceptor

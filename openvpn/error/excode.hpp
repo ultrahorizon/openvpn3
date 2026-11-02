@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_ERROR_EXCODE_H
 #define OPENVPN_ERROR_EXCODE_H
@@ -32,22 +22,14 @@ namespace openvpn {
 // Define an exception object that allows an Error::Type code to be thrown
 class ExceptionCode : public std::exception
 {
-    enum
-    {
-        FATAL_FLAG = 0x80000000
-    };
-
   public:
-    ExceptionCode()
-        : code_(0)
-    {
-    }
+    ExceptionCode() = default;
     ExceptionCode(const Error::Type code)
         : code_(code)
     {
     }
     ExceptionCode(const Error::Type code, const bool fatal)
-        : code_(mkcode(code, fatal))
+        : code_(code), fatal_(fatal)
     {
     }
 
@@ -58,37 +40,35 @@ class ExceptionCode : public std::exception
 
     void set_code(const Error::Type code, const bool fatal)
     {
-        code_ = mkcode(code, fatal);
+        code_ = code;
+        fatal_ = fatal;
     }
 
     Error::Type code() const
     {
-        return Error::Type(code_ & ~FATAL_FLAG);
+        return code_;
     }
     bool fatal() const
     {
-        return (code_ & FATAL_FLAG) != 0;
+        return fatal_;
     }
 
     bool code_defined() const
     {
-        return code_ != 0;
+        return code_ != Error::SUCCESS;
     }
 
-    virtual ~ExceptionCode() noexcept
+    //! Some errors may justify letting the underlying SSL library send out TLS alerts.
+    bool is_tls_alert() const
     {
+        return code() >= Error::TLS_VERSION_MIN && code() <= Error::TLS_ALERT_MISC;
     }
+
+    virtual ~ExceptionCode() noexcept = default;
 
   private:
-    static unsigned int mkcode(const Error::Type code, const bool fatal)
-    {
-        unsigned int ret = code;
-        if (fatal)
-            ret |= FATAL_FLAG;
-        return ret;
-    }
-
-    unsigned int code_;
+    Error::Type code_ = Error::SUCCESS;
+    bool fatal_ = false;
 };
 
 class ErrorCode : public ExceptionCode
@@ -99,14 +79,12 @@ class ErrorCode : public ExceptionCode
     {
     }
 
-    virtual const char *what() const noexcept
+    const char *what() const noexcept override
     {
         return err_.c_str();
     }
 
-    virtual ~ErrorCode() noexcept
-    {
-    }
+    virtual ~ErrorCode() noexcept = default;
 
   private:
     std::string err_;

@@ -4,23 +4,15 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
+
 
 /* Without doing this log dance core will not compile ... */
 
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <openvpn/client/cliemuexr.hpp>
 
@@ -28,7 +20,7 @@
 namespace unittests {
 #define DEBUG_PRINT_ROUTES      \
     for (auto &rt : tb->routes) \
-        std::cout << rt << std::endl;
+        std::cout << rt << "\n";
 
 /* Helper function for quick result comparision */
 std::string join_string_vector_sorted(std::vector<std::string> vec, const char *const delim = ", ")
@@ -70,7 +62,7 @@ class TunBuilderMock : public openvpn::TunBuilderBase
     std::vector<std::string> routes;
     std::vector<openvpn::IP::Route> routesAddr;
 
-    bool containsIP(std::string ipaddr)
+    bool containsIP(const std::string &ipaddr)
     {
         return containsIP(openvpn::IP::Addr(ipaddr));
     }
@@ -116,7 +108,7 @@ class RouteEmulationTest : public testing::Test
 
         if (!keepEmu)
         {
-            openvpn::EmulateExcludeRouteFactory::Ptr factory(
+            const openvpn::EmulateExcludeRouteFactory::Ptr factory(
                 new openvpn::EmulateExcludeRouteFactoryImpl(excludeServer));
 
             emu = factory->new_obj();
@@ -135,12 +127,12 @@ class RouteEmulationTest : public testing::Test
 
     void addRoute(bool include, const std::string &route)
     {
-        std::string ipstr = route.substr(0, route.find('/'));
-        std::string mask = route.substr(route.find('/') + 1);
+        const std::string ipstr = route.substr(0, route.find('/'));
+        const std::string mask = route.substr(route.find('/') + 1);
         emu->add_route(include, openvpn::IP::Addr(ipstr), std::stoi(mask));
     }
 
-    void doEmulate(std::string serverip = "1.2.3.4")
+    void doEmulate(const std::string &serverip = "1.2.3.4")
     {
         emu->emulate(this->tb, *this->ipflags, openvpn::IP::Addr(serverip));
     }
@@ -161,7 +153,7 @@ TEST_F(RouteEmulationTest, ExcludeOneSubnet)
 
     doEmulate();
 
-    ASSERT_EQ(tb->routes.size(), 24);
+    ASSERT_EQ(tb->routes.size(), 24U);
 }
 
 TEST_F(RouteEmulationTest, ExcludeSubnetsNoDefault)
@@ -175,7 +167,7 @@ TEST_F(RouteEmulationTest, ExcludeSubnetsNoDefault)
 
     doEmulate();
 
-    ASSERT_EQ(tb->routes.size(), 1);
+    ASSERT_EQ(tb->routes.size(), 1U);
     ASSERT_EQ(tb->routes.at(0), "10.20.128.0/17");
 
     setup(true, false);
@@ -186,17 +178,17 @@ TEST_F(RouteEmulationTest, ExcludeSubnetsNoDefault)
 
     doEmulate();
 
-    ASSERT_EQ(tb->routes.size(), 1);
+    ASSERT_EQ(tb->routes.size(), 1U);
     ASSERT_EQ(tb->routes.at(0), "2500:1000::/33");
 }
 
-TEST_F(RouteEmulationTest, excludeServer)
+TEST_F(RouteEmulationTest, ExcludeServer)
 {
     setup(false, true);
     emu->add_default_routes(true, true);
     doEmulate("1.2.3.4");
 
-    ASSERT_EQ(tb->routes.size(), 32);
+    ASSERT_EQ(tb->routes.size(), 32U);
     ASSERT_FALSE(tb->containsIP("1.2.3.4"));
     ASSERT_TRUE(tb->containsIP("1.2.3.5"));
     ASSERT_TRUE(tb->containsIP("1.2.3.3"));
@@ -206,14 +198,14 @@ TEST_F(RouteEmulationTest, excludeServer)
     emu->add_default_routes(true, true);
     doEmulate("::1.2.3.4");
 
-    ASSERT_EQ(tb->routes.size(), 128);
+    ASSERT_EQ(tb->routes.size(), 128U);
     ASSERT_FALSE(tb->containsIP("::1.2.3.4"));
     ASSERT_TRUE(tb->containsIP("::1.2.3.5"));
     ASSERT_TRUE(tb->containsIP("::1.2.3.3"));
     ASSERT_TRUE(tb->containsIP("::4.3.2.1"));
 }
 
-TEST_F(RouteEmulationTest, nestedIPRoutes)
+TEST_F(RouteEmulationTest, NestedIPRoutes)
 {
     // This sets up a number of routes that are all included in each
 
@@ -278,7 +270,7 @@ TEST_F(RouteEmulationTest, DefaultRoute)
 
     doEmulate();
 
-    ASSERT_EQ(tb->routes.size(), 1);
+    ASSERT_EQ(tb->routes.size(), 1U);
     ASSERT_EQ(tb->routes.at(0), "0.0.0.0/0");
 
     // Now something more tricky add unnecessary extra route
@@ -289,7 +281,7 @@ TEST_F(RouteEmulationTest, DefaultRoute)
 
     doEmulate();
 
-    ASSERT_EQ(tb->routes.size(), 2);
+    ASSERT_EQ(tb->routes.size(), 2U);
     ASSERT_EQ(tb->routes.at(0), "0.0.0.0/0");
 }
 

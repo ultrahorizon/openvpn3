@@ -36,7 +36,7 @@
 #include <openvpn/common/size.hpp>
 #include <openvpn/common/exception.hpp>
 
-#if !defined(OPENVPN_PLATFORM_WIN)
+#ifndef OPENVPN_PLATFORM_WIN
 #include <getopt.h>
 #else
 
@@ -176,7 +176,7 @@ inline int getopt_long(int nargc,
         char *current_argv = nargv[optind++] + 2;
         char *has_equal;
         int i;
-        int current_argv_len;
+        size_t current_argv_len;
         int match = -1;
 
         if (*current_argv == '\0')

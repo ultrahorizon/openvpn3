@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // console utilities for Windows
 
@@ -28,9 +18,7 @@
 #include <string>
 #include <openvpn/win/handle.hpp>
 
-namespace openvpn {
-namespace Win {
-namespace Console {
+namespace openvpn::Win::Console {
 
 class Input
 {
@@ -90,7 +78,7 @@ class Input
         std::cout << prompt;
         std::string s;
         std::getline(std::cin, s);
-        std::cout << std::endl;
+        std::cout << "\n";
 
         return s;
     }
@@ -160,8 +148,6 @@ class Title
     bool old_title_defined;
     std::string old_title;
 };
-} // namespace Console
-} // namespace Win
-} // namespace openvpn
+} // namespace openvpn::Win::Console
 
 #endif

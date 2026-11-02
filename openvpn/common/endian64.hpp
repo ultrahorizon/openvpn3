@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -25,8 +15,7 @@
 
 #include <openvpn/common/endian_platform.hpp>
 
-namespace openvpn {
-namespace Endian {
+namespace openvpn::Endian {
 #ifdef __MINGW32__
 inline std::uint64_t mingw_bswap64(const std::uint64_t val)
 {
@@ -43,7 +32,7 @@ inline std::uint64_t mingw_bswap64(const std::uint64_t val)
 inline std::uint64_t rev64(const std::uint64_t value)
 {
 #ifdef OPENVPN_LITTLE_ENDIAN
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
     return _byteswap_uint64(value);
 #elif defined(__MINGW32__)
     return mingw_bswap64(value);
@@ -56,5 +45,4 @@ inline std::uint64_t rev64(const std::uint64_t value)
     return value;
 #endif /* OPENVPN_LITTLE_ENDIAN */
 }
-} // namespace Endian
-} // namespace openvpn
+} // namespace openvpn::Endian

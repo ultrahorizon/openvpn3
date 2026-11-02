@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // API for OpenVPN Client, may be used standalone or wrapped by swig.
 // Use ovpncli.i to wrap the API for swig.
@@ -25,14 +15,16 @@
 // and TunBuilderBase.
 
 #include <string>
-#include <vector>
 #include <unordered_set>
 #include <utility>
+#include <vector>
+#include <optional>
 
 #include <openvpn/tun/builder/base.hpp>
 #include <openvpn/tun/extern/fw.hpp>
 #include <openvpn/pki/epkibase.hpp>
 #include <openvpn/transport/client/extern/fw.hpp>
+#include <openvpn/error/error.hpp>
 
 namespace openvpn {
 class OptionList;
@@ -52,8 +44,14 @@ struct ServerEntry
     std::string friendlyName;
 };
 
-// return properties of config
-// (client reads)
+/**
+    @brief Struct containing configuration details parsed from an OpenVPN configuration file.
+    @details
+    This struct holds various properties extracted from an OpenVPN configuration file, such as
+    error status, profile name, autologin flag, external PKI flag, VPN server CA, static
+    challenge, private key password requirement, remote host information, list of selectable VPN
+    servers, Windows driver, and DCO compatibility details.
+*/
 struct EvalConfig
 {
     // true if error
@@ -76,6 +74,13 @@ struct EvalConfig
 
     // if true, this is an External PKI profile (no cert or key directives)
     bool externalPki = false;
+
+    // VPN server CA in PEM format as given in the configuration. This is the CA, the
+    // VPN server certificate is checked against. This is not a parsed version so it
+    // can have extra lines around the actual certificates that an X509 parser would
+    // ignore.
+    // Note that this can can be empty if the profile uses --peer-fingerprint instead of traditional PKI check.
+    std::string vpnCa;
 
     // static challenge, may be empty, ignored if autologin
     std::string staticChallenge;
@@ -119,19 +124,6 @@ struct ProvideCreds
 
     // Dynamic challenge/response cookie
     std::string dynamicChallengeCookie;
-
-    // If true, on successful connect, we will replace the password
-    // with the session ID we receive from the server (if provided).
-    // If false, the password will be cached for future reconnects
-    // and will not be replaced with a session ID, even if the
-    // server provides one.
-    bool replacePasswordWithSessionID = false;
-
-    // If true, and if replacePasswordWithSessionID is true, and if
-    // we actually receive a session ID from the server, cache
-    // the user-provided password for future use before replacing
-    // the active password with the session ID.
-    bool cachePassword = false;
 };
 
 // used to get session token from VPN core
@@ -157,9 +149,7 @@ struct DynamicChallenge
 // passed as a dictionary
 struct KeyValue
 {
-    KeyValue()
-    {
-    }
+    KeyValue() = default;
 
     KeyValue(std::string key_arg, std::string value_arg)
         : key(std::move(key_arg)),
@@ -171,23 +161,16 @@ struct KeyValue
     std::string value;
 };
 
-// OpenVPN config-file/profile
-// (client writes)
-struct Config
+/* Settings in this struct do not need to be parsed, so we can share them
+ * between the parsed and unparsed client settings */
+struct ConfigCommon
 {
-    // OpenVPN profile as a string
-    std::string content;
-
-    // OpenVPN profile as series of key/value pairs (may be provided exclusively
-    // or in addition to content string above).
-    std::vector<KeyValue> contentList;
-
     // Set to identity OpenVPN GUI version.
     // Format should be "<gui_identifier><space><version>"
     // Passed to server as IV_GUI_VER.
     std::string guiVersion;
 
-    // Set to a comma seperated list of supported SSO mechanisms that may
+    // Set to a comma separated list of supported SSO mechanisms that may
     // be signalled via INFO_PRE to the client.
     // "openurl"   deprecated version of webauth
     // "webauth" to continue authentication by opening an url in a browser
@@ -195,6 +178,11 @@ struct Config
     // responded via control channel. (
     // Passed to the server as IV_SSO
     std::string ssoMethods;
+
+    // Set to a comma separated list of supported custom app control channel
+    // protocols. The semantics of these protocols are determined by the
+    // app/server and not by the OpenVPN protocol.
+    std::string appCustomProtocols;
 
     // Override the string that is passed as IV_HWADDR to the server
     std::string hwAddrOverride;
@@ -210,20 +198,6 @@ struct Config
     // option of profile
     std::string portOverride;
 
-    // Force a given transport protocol
-    // Should be tcp, udp, or adaptive.
-    std::string protoOverride;
-
-    // Force transport protocol IP version
-    // Should be 4 for IPv4 or 6 for IPv6.
-    int protoVersionOverride = 0;
-
-    // allowUnusedAddrFamilies preference
-    //  no      -- disable IPv6/IPv4, so tunnel will be IPv4 or IPv6 only if not dualstack
-    //  yes     -- Allow continuing using native IPv4/IPv6 connectivity for single IP family tunnel
-    //  default (or empty string) -- leave decision to server/config
-    std::string allowUnusedAddrFamilies;
-
     // Connection timeout in seconds, or 0 to retry indefinitely
     int connTimeout = 0;
 
@@ -233,6 +207,14 @@ struct Config
     // If true and a redirect-gateway profile doesn't also define
     // DNS servers, use the standard Google DNS servers.
     bool googleDnsFallback = false;
+
+    // If true --dhcp-option DOMAIN{-SEARCH} are parsed as split
+    // domains, ADAPTER_DOMAIN_SUFFIX is the only search domain
+#if defined(OPENVPN_PLATFORM_WIN) || defined(OPENVPN_PLATFORM_MAC) || defined(OPENVPN_PLATFORM_LINUX) || defined(OPENVPN_PLATFORM_IPHONE)
+    bool dhcpSearchDomainsAsSplitDomains = true;
+#else
+    bool dhcpSearchDomainsAsSplitDomains = false;
+#endif
 
     // if true, do synchronous DNS lookup.
     bool synchronousDnsLookup = false;
@@ -244,21 +226,11 @@ struct Config
     // and retry the connection after a pause.
     bool retryOnAuthFailed = false;
 
-    // An ID used for get-certificate and RSA signing callbacks
-    // for External PKI profiles.
-    std::string externalPkiAlias;
-
     // If true, don't send client cert/key to peer.
     bool disableClientCert = false;
 
     // SSL library debug level
     int sslDebugLevel = 0;
-
-    // Compression mode, one of:
-    // yes -- allow compression on both uplink and downlink
-    // asym -- allow compression on downlink only (i.e. server -> client)
-    // no (default if empty) -- support compression stubs only
-    std::string compressionMode;
 
     // private key password (optional)
     std::string privateKeyPassword;
@@ -301,9 +273,6 @@ struct Config
     // Overrides the list of TLS 1.3 ciphersuites like the tls-ciphersuites
     // option
     std::string tlsCiphersuitesList;
-
-    // Pass custom key/value pairs to OpenVPN server.
-    std::vector<KeyValue> peerInfo;
 
     // HTTP Proxy parameters (optional)
     std::string proxyHost;                // hostname or IP address of proxy
@@ -368,7 +337,47 @@ struct Config
     // Generate an INFO_JSON/TUN_BUILDER_CAPTURE event
     // with all tun builder properties pushed by server.
     // Currently only implemented on Linux.
-    bool generate_tun_builder_capture_event = false;
+    bool generateTunBuilderCaptureEvent = false;
+};
+
+// OpenVPN config-file/profile. Includes a few settings that we do not just
+// copy but also parse
+// (client writes)
+struct Config : public ConfigCommon
+{
+    // OpenVPN profile as a string
+    std::string content;
+
+    // OpenVPN profile as series of key/value pairs (may be provided exclusively
+    // or in addition to content string above).
+    std::vector<KeyValue> contentList;
+
+    // Force a given transport protocol
+    // Should be tcp, udp, or adaptive.
+    std::string protoOverride;
+
+    // Force transport protocol IP version
+    // Should be 4 for IPv4 or 6 for IPv6.
+    int protoVersionOverride = 0;
+
+    // allowUnusedAddrFamilies preference
+    //  no      -- disable IPv6/IPv4, so tunnel will be IPv4 or IPv6 only if not dualstack
+    //  yes     -- Allow continuing using native IPv4/IPv6 connectivity for single IP family tunnel
+    //  default (or empty string) -- leave decision to server/config
+    std::string allowUnusedAddrFamilies;
+
+    // Compression mode, one of:
+    // yes -- allow compression on both uplink and downlink
+    // asym -- allow compression on downlink only (i.e. server -> client)
+    // no (default if empty) -- support compression stubs only
+    std::string compressionMode;
+
+    // An ID used for get-certificate and RSA signing callbacks
+    // for External PKI profiles.
+    std::string externalPkiAlias;
+
+    // Pass custom key/value pairs to OpenVPN server.
+    std::vector<KeyValue> peerInfo;
 };
 
 // used to communicate VPN events such as connect, disconnect, etc.
@@ -379,6 +388,19 @@ struct Event
     bool fatal = false; // true if fatal error (will disconnect)
     std::string name;   // event name
     std::string info;   // additional event info
+};
+
+/**
+ * Used to signal messages from the peer.
+ *
+ * There is a special event that uses internal:supported_protocols as
+ * protocol and a : separated list as the list of protocols the server
+ * pushed to us as supported protocols.
+ */
+struct AppCustomControlMessageEvent
+{
+    std::string protocol;
+    std::string payload;
 };
 
 // used to communicate extra details about successful connection
@@ -413,9 +435,8 @@ struct Status
 // (client reads)
 struct LogInfo
 {
-    LogInfo()
-    {
-    }
+    LogInfo() = default;
+
     LogInfo(std::string str)
         : text(std::move(str))
     {
@@ -427,9 +448,7 @@ struct LogInfo
 struct LogReceiver
 {
     virtual void log(const LogInfo &) = 0;
-    virtual ~LogReceiver()
-    {
-    }
+    virtual ~LogReceiver() = default;
 };
 
 // used to pass stats for an interface
@@ -567,12 +586,6 @@ class OpenVPNClientHelper
     // Returns core copyright
     static std::string copyright();
 
-    // If those options are present, dco cannot be used
-    inline static std::unordered_set<std::string> dco_incompatible_opts = {
-        "http-proxy",
-        "compress",
-        "comp-lzo"};
-
   private:
     static MergeConfig build_merge_config(const ProfileMerge &);
 
@@ -585,11 +598,6 @@ class OpenVPNClientHelper
      * included in the same compilation unit which breaks in the swig wrapped
      * class, so we use a plain pointer and new/delete in constructor/destructor */
     InitProcess::Init *init;
-
-    /* Checks if there are dco-incompatible options in options list or config has
-     * dco-incompatible settings. Sets dcoCompatible flag and dcoIncompatibilityReason
-     * string property (if applicable) in EvalConfig object */
-    static void check_dco_compatibility(const Config &, EvalConfig &, OptionList &);
 };
 
 // Top-level OpenVPN client class.
@@ -612,7 +620,7 @@ class OpenVPNClient : public TunBuilderBase,             // expose tun builder v
     // Callback to "protect" a socket from being routed through the tunnel.
     // Will be called from the thread executing connect().
     // The remote and ipv6 are the remote host this socket will connect to
-    virtual bool socket_protect(int socket, std::string remote, bool ipv6);
+    virtual bool socket_protect(openvpn_io::detail::socket_type socket, std::string remote, bool ipv6);
 
     // Primary VPN client connect method, doesn't return until disconnect.
     // Should be called by a worker thread.  This method will make callbacks
@@ -677,13 +685,46 @@ class OpenVPNClient : public TunBuilderBase,             // expose tun builder v
     // post control channel message
     void post_cc_msg(const std::string &msg);
 
+    // send custom app control channel message
+    void send_app_control_channel_msg(const std::string &protocol, const std::string &msg);
+
+    /**
+      @brief Start up the cert check handshake using the given certs and key
+      @param client_cert String containing the properly encoded client certificate
+      @param clientkey String containing the properly encoded private key for \p client_cert
+      @param ca Optional string containing the properly encoded authority
+
+      This function forwards to ClientProto::Session::start_acc_certcheck, which sets up the
+      session ACC certcheck TLS handshake object. Every time this function is called the state of
+      the handshake object will be reset and the handshake will be restarted.
+    */
+    void start_cert_check(const std::string &client_cert,
+                          const std::string &clientkey,
+                          const std::optional<const std::string> &ca = std::nullopt);
+
+    /**
+      @brief Start up the cert check handshake using the given epki_alias string
+      @param alias String containing the epki used for callbacks for certificate and signing operations
+      @param ca Optional string containing the properly encoded authority
+
+      This function forwards to ClientProto::Session::start_acc_certcheck, which sets up the
+      session ACC certcheck TLS handshake object. Every time this function is called the state of
+      the handshake object will be reset and the handshake will be restarted.
+    */
+    void start_cert_check_epki(const std::string &alias, const std::optional<const std::string> &ca);
+
     // Callback for delivering events during connect() call.
     // Will be called from the thread executing connect().
+    // Will also deliver custom message from the server like AUTH_PENDING AUTH
+    // events and custom control message events
     virtual void event(const Event &) = 0;
+
+    // Call for delivering event from app custom control channel
+    virtual void acc_event(const AppCustomControlMessageEvent &) = 0;
 
     // Callback for logging.
     // Will be called from the thread executing connect().
-    virtual void log(const LogInfo &) override = 0;
+    void log(const LogInfo &) override = 0;
 
     // External PKI callbacks
     // Will be called from the thread executing connect().
@@ -711,7 +752,11 @@ class OpenVPNClient : public TunBuilderBase,             // expose tun builder v
     virtual void connect_run();
     virtual void connect_session_stop();
 
+#ifndef SWIG
+    /* hide this function from swig as it otherwise complains about a director
+     * method returning a pointer and the swig interfaces does not need this method. */
     virtual Stop *get_async_stop();
+#endif
 
     Private::ClientState *state;
 
@@ -720,14 +765,15 @@ class OpenVPNClient : public TunBuilderBase,             // expose tun builder v
     void do_connect_async();
     static Status status_from_exception(const std::exception &);
     void parse_extras(const Config &, EvalConfig &);
-    void external_pki_error(const ExternalPKIRequestBase &, const size_t);
+    void external_pki_error(const ExternalPKIRequestBase &, const Error::Type);
     void process_epki_cert_chain(const ExternalPKICertRequest &);
 
     friend class MyClientEvents;
     void on_disconnect();
 
     // from ExternalPKIBase
-    bool sign(const std::string &data,
+    bool sign(const std::string &alias,
+              const std::string &data,
               std::string &sig,
               const std::string &algorithm,
               const std::string &hashalg,

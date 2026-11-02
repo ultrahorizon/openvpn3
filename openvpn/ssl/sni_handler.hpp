@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -27,14 +17,13 @@
 #include <openvpn/ssl/sslapi.hpp>
 #include <openvpn/ssl/sni_metadata.hpp>
 
-namespace openvpn {
-namespace SNI {
+namespace openvpn::SNI {
 
 // Abstract base class used to provide an SNI handler
 class HandlerBase
 {
   public:
-    typedef std::unique_ptr<HandlerBase> UPtr;
+    using UPtr = std::unique_ptr<HandlerBase>;
 
     // Return a new SSLFactoryAPI for this SNI name.
     // Implementation may also set sni_metadata.
@@ -48,10 +37,19 @@ class HandlerBase
                                          SSLConfigAPI::Ptr default_factory) const = 0;
     // clang-format on
 
-    virtual ~HandlerBase()
+    /**
+     * @brief Whether the ClientHello SNI may select a context
+     *
+     * The SNI is chosen by the client and sent in the clear. A handler that should
+     * only be reached through SSLAPI::set_sni_hint() returns false, and an SNI
+     * without a hint then keeps the default context.
+     */
+    virtual bool select_by_sni() const
     {
+        return true;
     }
+
+    virtual ~HandlerBase() = default;
 };
 
-} // namespace SNI
-} // namespace openvpn
+} // namespace openvpn::SNI

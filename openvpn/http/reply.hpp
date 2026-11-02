@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 //
 // Source: pkg:github/chriskohlhoff/asio@asio-1-8-0#asio/src/examples/http
 //  Adapted from code Copyright (c) 2003-2012 Christopher M. Kohlhoff (chris at kohlhoff dot com)
@@ -33,8 +23,7 @@
 #include <openvpn/http/header.hpp>
 #include <openvpn/http/parseutil.hpp>
 
-namespace openvpn {
-namespace HTTP {
+namespace openvpn::HTTP {
 
 struct Reply
 {
@@ -55,10 +44,10 @@ struct Reply
     std::string to_string() const
     {
         std::ostringstream out;
-        out << "HTTP Reply" << std::endl;
-        out << "version=" << http_version_major << '/' << http_version_minor << std::endl;
-        out << "status_code=" << status_code << std::endl;
-        out << "status_text=" << status_text << std::endl;
+        out << "HTTP Reply\n";
+        out << "version=" << http_version_major << '/' << http_version_minor << '\n';
+        out << "status_code=" << status_code << '\n';
+        out << "status_text=" << status_text << '\n';
         out << headers.to_string();
         return out.str();
     }
@@ -401,10 +390,9 @@ class ReplyParser
 
 struct ReplyType
 {
-    typedef Reply State;
-    typedef ReplyParser Parser;
+    using State = Reply;
+    using Parser = ReplyParser;
 };
-} // namespace HTTP
-} // namespace openvpn
+} // namespace openvpn::HTTP
 
 #endif

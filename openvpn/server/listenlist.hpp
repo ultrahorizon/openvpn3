@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_SERVER_LISTENLIST_H
 #define OPENVPN_SERVER_LISTENLIST_H
@@ -37,8 +27,7 @@
 #include <openvpn/addr/ip.hpp>
 #include <openvpn/transport/protocol.hpp>
 
-namespace openvpn {
-namespace Listen {
+namespace openvpn::Listen {
 struct Item
 {
     enum SSLMode
@@ -109,9 +98,7 @@ class List : public std::vector<Item>
 #endif
     };
 
-    List()
-    {
-    }
+    List() = default;
 
     List(const Item &item)
     {
@@ -180,13 +167,13 @@ class List : public std::vector<Item>
                 int n_threads_exists = 0;
                 {
                     const std::string ntstr = o.get_optional(4 - local, 16);
-                    if (ntstr.length() > 0 && string::is_digit(ntstr[0]))
+                    if (!ntstr.empty() && string::is_digit(ntstr[0]))
                         n_threads_exists = 1;
                 }
                 if (n_threads_exists)
                 {
                     std::string n_threads = o.get(4 - local, 16);
-                    if (string::ends_with(n_threads, "*N"))
+                    if (n_threads.ends_with("*N"))
                     {
                         mult = n_cores;
                         n_threads = n_threads.substr(0, n_threads.length() - 2);
@@ -340,7 +327,6 @@ class List : public std::vector<Item>
 #endif
     }
 };
-} // namespace Listen
-} // namespace openvpn
+} // namespace openvpn::Listen
 
 #endif

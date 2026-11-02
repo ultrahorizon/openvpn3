@@ -6,14 +6,30 @@
 
 %include "std_string.i" // for std::string typemaps
 %include "std_vector.i"
+%include "std_map.i"
+
+#ifdef SWIGJAVA
+%include "swiginterface.i"
+#endif
 
 // top-level C++ implementation file
 %{
 #include "ovpncli.hpp"
 %}
 
+#ifndef OPENVPN_PLATFORM_WIN
+// simplify interface, not picked up automatically
+%apply int { openvpn_io::detail::socket_type };
+%apply int { asio::detail::socket_type };
+#endif
+
+%apply size_t { openvpn::Error::Type };
+
+#ifdef SWIGJAVA
+%interface(openvpn::ClientAPI::LogReceiver);
+#endif
+
 // ignore these ClientAPI::OpenVPNClient bases
-%ignore openvpn::ClientAPI::LogReceiver;
 %ignore openvpn::ExternalTun::Factory;
 %ignore openvpn::ExternalTransport::Factory;
 
@@ -30,6 +46,7 @@
 %rename(ClientAPI_KeyValue) KeyValue;
 %rename(ClientAPI_Config) Config;
 %rename(ClientAPI_Event) Event;
+%rename(ClientAPI_AppCustomControlMessageEvent) AppCustomControlMessageEvent;
 %rename(ClientAPI_ConnectionInfo) ConnectionInfo;
 %rename(ClientAPI_Status) Status;
 %rename(ClientAPI_LogInfo) LogInfo;
@@ -47,8 +64,12 @@ namespace std {
   %template(ClientAPI_LLVector) vector<long long>;
   %template(ClientAPI_StringVec) vector<string>;
 };
+%template(DnsOptions_AddressList) std::vector<openvpn::DnsAddress>;
+%template(DnsOptions_DomainsList) std::vector<openvpn::DnsDomain>;
+%template(DnsOptions_ServersMap) std::map<int, openvpn::DnsServer>;
 
 // interface to be bridged between C++ and target language
+%include "openvpn/client/dns_options.hpp"
 %include "openvpn/pki/epkibase.hpp"
 %include "openvpn/tun/builder/base.hpp"
 %import  "openvpn/tun/extern/fw.hpp"     // ignored

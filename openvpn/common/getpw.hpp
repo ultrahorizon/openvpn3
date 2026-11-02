@@ -4,27 +4,17 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_COMMON_GETPW_H
 #define OPENVPN_COMMON_GETPW_H
 
 #include <openvpn/common/platform.hpp>
 
-#if !defined(OPENVPN_PLATFORM_WIN)
+#ifndef OPENVPN_PLATFORM_WIN
 #include <pwd.h>
 #include <unistd.h>
 #else
@@ -38,8 +28,8 @@
 namespace openvpn {
 inline std::string get_password(const char *prompt)
 {
-#if !defined(OPENVPN_PLATFORM_WIN)
-    char *ret = getpass(prompt);
+#ifndef OPENVPN_PLATFORM_WIN
+    const char *ret = getpass(prompt);
     return ret;
 #else
     Win::Console::Input i{true};

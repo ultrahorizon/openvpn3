@@ -4,21 +4,13 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
 
-#include "test_common.h"
+
+#include "test_common.hpp"
 
 #include <openvpn/client/optfilt.hpp>
 
@@ -71,22 +63,22 @@ TEST(PushedOptionsFilter, RouteNopullEnabled)
     testLog->startCollecting();
     src.parse_from_config(nopull_options + extra_option, nullptr);
     dst.extend(src, &route_nopull_enabled);
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 
-    ASSERT_EQ(1, dst.size())
-        << "Too few options have been filtered by --route-nopull" << std::endl
+    ASSERT_EQ(1U, dst.size())
+        << "Too few options have been filtered by --route-nopull\n"
         << filter_output;
 
     dst.update_map();
     ASSERT_TRUE(dst.exists(extra_option))
-        << "The wrong options have been filtered by --route-nopull:" << std::endl
-        << "expected: " << extra_option << " got: " << dst[0].ref(0) << std::endl
+        << "The wrong options have been filtered by --route-nopull:\n"
+        << "expected: " << extra_option << " got: " << dst[0].ref(0) << '\n'
         << filter_output;
 }
 
 TEST(PushedOptionsFilter, RouteNopullDisabled)
 {
-    OptionList cfg;
+    const OptionList cfg;
 
     PushedOptionsFilter route_nopull_disabled(cfg);
     const std::string extra_option("unfiltered-option");
@@ -97,10 +89,10 @@ TEST(PushedOptionsFilter, RouteNopullDisabled)
     testLog->startCollecting();
     src.parse_from_config(nopull_options + extra_option, nullptr);
     dst.extend(src, &route_nopull_disabled);
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 
     ASSERT_EQ(src.size(), dst.size())
-        << "Too many options have been filtered by --route-nopull" << std::endl
+        << "Too many options have been filtered by --route-nopull\n"
         << filter_output;
 }
 
@@ -118,10 +110,10 @@ TEST(PushedOptionsFilter, PullFilterAcceptAll)
     testLog->startCollecting();
     src.parse_from_config(pull_filter_options, nullptr);
     dst.extend(src, &filter_none);
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 
     ASSERT_EQ(src.size(), dst.size())
-        << "Not all options have been accepted by --pull-filter" << std::endl
+        << "Not all options have been accepted by --pull-filter\n"
         << filter_output;
 }
 
@@ -152,6 +144,37 @@ TEST(PushedOptionsFilter, PullFilterMalformedLong)
     ASSERT_THROW(PushedOptionsFilter x(cfg), option_error);
 }
 
+TEST(PushedOptionsFilter, PullFilterSingleQuote)
+{
+    OptionList cfg;
+    cfg.parse_from_config("pull-filter ignore 'route 1.2.3.4'", nullptr);
+    cfg.update_map();
+    PushedOptionsFilter filter(cfg);
+
+    OptionList src;
+    OptionList dst;
+
+    dst.extend(src, &filter);
+
+    testLog->startCollecting();
+    src.parse_from_config("route 1.1.1.1\nroute 2.2.2.2\nroute 1.2.3.4", nullptr);
+    dst.extend(src, &filter);
+    const std::string filter_output(testLog->stopCollecting());
+
+    ASSERT_EQ(2U, dst.size())
+        << "Too many options have been accepted by --pull-filter\n"
+        << filter_output;
+}
+
+TEST(PushedOptionsFilter, PullFilterMisplacedQuote)
+{
+    OptionList cfg;
+    cfg.parse_from_config("pull-filter ignore 'a b' c", nullptr);
+    cfg.update_map();
+
+    ASSERT_THROW(PushedOptionsFilter x(cfg), option_error);
+}
+
 TEST(PushedOptionsFilter, PullFilterIgnoreAll)
 {
     OptionList cfg;
@@ -166,10 +189,10 @@ TEST(PushedOptionsFilter, PullFilterIgnoreAll)
     testLog->startCollecting();
     src.parse_from_config(pull_filter_options, nullptr);
     dst.extend(src, &filter_all);
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 
-    ASSERT_EQ(0, dst.size())
-        << "Not all options have been ignored by --pull-filter" << std::endl
+    ASSERT_EQ(0U, dst.size())
+        << "Not all options have been ignored by --pull-filter\n"
         << filter_output;
 }
 
@@ -207,10 +230,10 @@ TEST(PushedOptionsFilter, PullFilterAcceptWhitespace)
     testLog->startCollecting();
     src.parse_from_config(pull_filter_options, nullptr);
     dst.extend(src, &accept_opt3);
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 
-    ASSERT_EQ(2, dst.size())
-        << "Not all option3's have been accepted by --pull-filter" << std::endl
+    ASSERT_EQ(2U, dst.size())
+        << "Not all option3's have been accepted by --pull-filter\n"
         << filter_output;
 }
 
@@ -231,15 +254,15 @@ TEST(PushedOptionsFilter, PullFilterIgnoreQuotedWhitespace)
     testLog->startCollecting();
     src.parse_from_config(pull_filter_options, nullptr);
     dst.extend(src, &accept_opt2_single_space);
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 
-    ASSERT_EQ(1, dst.size())
-        << "Too many options have been accepted by --pull-filter" << std::endl
+    ASSERT_EQ(1U, dst.size())
+        << "Too many options have been accepted by --pull-filter\n"
         << filter_output;
 
     dst.update_map();
     ASSERT_EQ(dst[0].ref(1), "arg with space")
-        << "Too many options have been accepted by --pull-filter" << std::endl
+        << "Too many options have been accepted by --pull-filter\n"
         << filter_output;
 }
 
@@ -262,30 +285,30 @@ TEST(PushedOptionsFilter, PullFilterOverrideRouteNopull)
     testLog->startCollecting();
     src.parse_from_config(nopull_options, nullptr);
     dst.extend(src, &override_route_nopull);
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 
-    ASSERT_EQ(2, dst.size())
-        << "Expected two route option to be accepted" << std::endl
+    ASSERT_EQ(2U, dst.size())
+        << "Expected two route option to be accepted\n"
         << filter_output;
 
     dst.update_map();
     ASSERT_EQ(dst[0].ref(0), "route")
-        << dst[0].ref(0) << " instead of route option has been accepted" << std::endl
+        << dst[0].ref(0) << " instead of route option has been accepted\n"
         << filter_output;
     ASSERT_EQ(dst[1].ref(0), "route")
-        << dst[1].ref(0) << " instead of route option has been accepted" << std::endl
+        << dst[1].ref(0) << " instead of route option has been accepted\n"
         << filter_output;
-    ASSERT_EQ(3, dst[0].size())
-        << "The host route option has been accepted, expected network route" << std::endl
+    ASSERT_EQ(3U, dst[0].size())
+        << "The host route option has been accepted, expected network route\n"
         << filter_output;
-    ASSERT_EQ(3, dst[1].size())
-        << "The host route option has been accepted, expected network route" << std::endl
+    ASSERT_EQ(3U, dst[1].size())
+        << "The host route option has been accepted, expected network route\n"
         << filter_output;
 }
 
 TEST(PushedOptionsFilter, RejectDnsServerPrioNegative)
 {
-    OptionList cfg;
+    const OptionList cfg;
     PushedOptionsFilter filter_static(cfg);
 
     const std::string opt = "dns server -1 address ::1";
@@ -297,5 +320,5 @@ TEST(PushedOptionsFilter, RejectDnsServerPrioNegative)
 
     testLog->startCollecting();
     JY_EXPECT_THROW(dst.extend(src, &filter_static), option_error, opt)
-    std::string filter_output(testLog->stopCollecting());
+    const std::string filter_output(testLog->stopCollecting());
 }

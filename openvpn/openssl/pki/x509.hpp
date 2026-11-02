@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Wrap an OpenSSL X509 object
 
@@ -30,6 +20,7 @@
 #include <openssl/bio.h>
 
 #include <openvpn/common/size.hpp>
+#include <openvpn/common/numeric_cast.hpp>
 #include <openvpn/common/exception.hpp>
 #include <openvpn/openssl/util/error.hpp>
 
@@ -60,8 +51,7 @@ class X509
     {
     }
 
-    X509(X509 &&other)
-    noexcept
+    X509(X509 &&other) noexcept
         : x509_(std::move(other.x509_))
     {
     }
@@ -101,7 +91,7 @@ class X509
 
     void parse_pem(const std::string &cert_txt, const std::string &title)
     {
-        BIO *bio = ::BIO_new_mem_buf(const_cast<char *>(cert_txt.c_str()), cert_txt.length());
+        BIO *bio = ::BIO_new_mem_buf(const_cast<char *>(cert_txt.c_str()), numeric_cast<int>(cert_txt.length()));
         if (!bio)
             throw OpenSSLException();
 
@@ -127,7 +117,7 @@ class X509
 
             {
                 char *temp;
-                const int buf_len = ::BIO_get_mem_data(bio, &temp);
+                const auto buf_len = ::BIO_get_mem_data(bio, &temp);
                 std::string ret = std::string(temp, buf_len);
                 ::BIO_free(bio);
                 return ret;
@@ -147,17 +137,14 @@ class X509
             ::X509 *dup = ::X509_dup(const_cast<::X509 *>(x509.get()));
             return {dup, ::X509_free};
         }
-        else
-        {
-            return {nullptr, ::X509_free};
-        }
+
+        return {nullptr, ::X509_free};
     }
     static ::X509 *dup(const ::X509 *x509)
     {
         if (x509)
             return ::X509_dup(const_cast<::X509 *>(x509));
-        else
-            return nullptr;
+        return nullptr;
     }
 
     X509_unique_ptr x509_{nullptr, ::X509_free};
@@ -166,7 +153,7 @@ class X509
 class X509List : public std::vector<X509>
 {
   public:
-    typedef X509 Item;
+    using Item = X509;
 
     bool defined() const
     {

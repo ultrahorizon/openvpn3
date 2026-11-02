@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Define Frame classes.  These classes act as a factory for standard protocol
 // buffers and also try to optimize the buffers for alignment.
@@ -35,7 +25,7 @@ namespace openvpn {
 class Frame : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<Frame> Ptr;
+    using Ptr = RCPtr<Frame>;
 
     // Frame context types -- we maintain a Context object for each context type
     enum
@@ -72,7 +62,7 @@ class Frame : public RC<thread_unsafe_refcount>
             headroom_ = 0;
             payload_ = 0;
             tailroom_ = 0;
-            buffer_flags_ = 0;
+            buffer_flags_ = BufAllocFlags::NO_FLAGS;
             align_adjust_ = 0;
             align_block_ = sizeof(std::size_t);
             adj_headroom_ = 0;
@@ -82,9 +72,9 @@ class Frame : public RC<thread_unsafe_refcount>
         Context(const size_t headroom,
                 const size_t payload,
                 const size_t tailroom,
-                const size_t align_adjust,       // length of leading prefix data before the data that needs to be aligned on a size_t boundary
-                const size_t align_block,        // size of alignment block, usually sizeof(size_t) but sometimes the cipher block size
-                const unsigned int buffer_flags) // flags passed to BufferAllocated constructor
+                const size_t align_adjust,      // length of leading prefix data before the data that needs to be aligned on a size_t boundary
+                const size_t align_block,       // size of alignment block, usually sizeof(size_t) but sometimes the cipher block size
+                const BufferFlags buffer_flags) // flags passed to BufferAllocatedRc constructor
         {
             headroom_ = headroom;
             payload_ = payload;
@@ -116,7 +106,7 @@ class Frame : public RC<thread_unsafe_refcount>
         {
             return adj_capacity_;
         }
-        unsigned int buffer_flags() const
+        BufferFlags buffer_flags() const
         {
             return buffer_flags_;
         }
@@ -144,11 +134,11 @@ class Frame : public RC<thread_unsafe_refcount>
             buf.realign(actual_headroom(buf.c_data_raw()));
         }
 
-        // Return a new BufferAllocated object initialized with the given data.
+        // Return a new BufferAllocatedRc object initialized with the given data.
         BufferPtr copy(const unsigned char *data, const size_t size) const
         {
             const size_t cap = size + headroom() + tailroom();
-            BufferPtr b = new BufferAllocated(cap, buffer_flags());
+            auto b = BufferAllocatedRc::Create(cap, buffer_flags());
             b->init_headroom(actual_headroom(b->c_data_raw()));
             b->write(data, size);
             return b;
@@ -164,13 +154,13 @@ class Frame : public RC<thread_unsafe_refcount>
             return b;
         }
 
-        // Return a new BufferAllocated object initialized with
+        // Return a new BufferAllocatedRc object initialized with
         // the data in given buffer.  buf may be empty or undefined.
         BufferPtr copy(const BufferPtr &buf) const
         {
             const size_t size = buf ? buf->size() : 0;
             const size_t cap = size + headroom() + tailroom();
-            BufferPtr b = new BufferAllocated(cap, buffer_flags());
+            auto b = BufferAllocatedRc::Create(cap, buffer_flags());
             b->init_headroom(actual_headroom(b->c_data_raw()));
             if (size)
                 b->write(buf->c_data(), size);
@@ -182,8 +172,7 @@ class Frame : public RC<thread_unsafe_refcount>
         {
             if (payload() > buf.size())
                 return payload() - buf.size();
-            else
-                return 0;
+            return 0;
         }
 
         // Used to set the capacity of a group of Context objects
@@ -247,16 +236,14 @@ class Frame : public RC<thread_unsafe_refcount>
         size_t tailroom_;
         size_t align_adjust_;
         size_t align_block_;
-        unsigned int buffer_flags_;
+        BufferFlags buffer_flags_;
 
         // derived
         size_t adj_headroom_;
         size_t adj_capacity_;
     };
 
-    Frame()
-    {
-    }
+    Frame() = default;
 
     explicit Frame(const Context &c)
     {
@@ -280,7 +267,7 @@ class Frame : public RC<thread_unsafe_refcount>
 
     BufferPtr prepare(const unsigned int context) const
     {
-        BufferPtr buf(new BufferAllocated());
+        auto buf = BufferAllocatedRc::Create();
         prepare(context, *buf);
         return buf;
     }

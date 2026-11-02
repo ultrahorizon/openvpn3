@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <openvpn/time/time.hpp>
 #include <openvpn/random/mtrandapi.hpp>
@@ -6,15 +6,26 @@
 #include <openvpn/time/skew.hpp>
 #include <openvpn/common/format.hpp>
 
+#include <cmath>
+#include <cstdint>
+
 using namespace openvpn;
 using namespace openvpn;
+
+//! Draws per Time.Timeskew run
+constexpr int SAMPLES = 10000;
+
+//! Standard errors of slack allowed around each expected mean
+constexpr double STD_ERRORS = 5.0;
+
+//! Arbitrary fixed PRNG seed, so that an unlucky stream cannot fail a statistical check
+constexpr std::uint64_t PRNG_SEED = 20250910;
 
 int my_abs(const int value)
 {
     if (value >= 0)
         return value;
-    else
-        return -value;
+    return -value;
 }
 
 class Mean
@@ -70,26 +81,38 @@ void test_skew(const Time::Duration &dur,
                RandomAPI &prng)
 {
     const Time::Duration after = TimeSkew::skew(dur, skew_factor, prng);
-    md.mean.add(after.to_binary_ms());
+    md.mean.add(static_cast<int>(after.to_binary_ms()));
     md.dev.add(my_abs(int(dur.to_binary_ms()) - int(after.to_binary_ms())));
     if (verbose)
         OPENVPN_LOG("BEFORE=" << dur.to_binary_ms() << " AFTER=" << after.to_binary_ms());
 }
 
-TEST(time, timeskew)
+TEST(Time, Timeskew)
 {
-    MTRand::Ptr prng(new MTRand());
+    // Seeded, because the checks below are statistical and a failure has to reproduce.
+    MTRand::Ptr prng(new MTRand(PRNG_SEED));
+    const Time::Duration dur = Time::Duration::seconds(10);
+
     MeanDev md;
-    for (int i = 0; i < 10000; ++i)
+    for (int i = 0; i < SAMPLES; ++i)
     {
-        test_skew(Time::Duration::seconds(10), TimeSkew::PCT_25, md, false, *prng);
+        test_skew(dur, TimeSkew::PCT_25, md, false, *prng);
     }
     // OPENVPN_LOG(md.to_string());
-    md.mean.check_mean_range("mean", 10100, 10300);
-    md.dev.check_mean_range("dev", 1250, 1350);
+
+    // skew() adds a flux uniform over [-bms/2, bms/2) with bms = dur >> factor, so
+    // over SAMPLES draws the mean converges on dur and the mean deviation on bms/4,
+    // with standard errors of bms/sqrt(12*SAMPLES) and bms/sqrt(48*SAMPLES).
+    const int dur_ms = static_cast<int>(dur.to_binary_ms());
+    const int bms = dur_ms >> TimeSkew::PCT_25;
+    const int mean_tol = static_cast<int>(STD_ERRORS * bms / std::sqrt(12.0 * SAMPLES));
+    const int dev_tol = static_cast<int>(STD_ERRORS * bms / std::sqrt(48.0 * SAMPLES));
+
+    md.mean.check_mean_range("mean", dur_ms - mean_tol, dur_ms + mean_tol);
+    md.dev.check_mean_range("dev", bms / 4 - dev_tol, bms / 4 + dev_tol);
 }
 
-TEST(time, test1)
+TEST(Time, Test1)
 {
     Time::reset_base();
 
@@ -107,7 +130,7 @@ TEST(time, test1)
         const Time::type frac = t.fractional_binary_ms();
         if (sec != last_sec || frac != last_frac)
         {
-            // std::cout << sec << ' ' << frac << std::endl;
+            // std::cout << sec << ' ' << frac << "\n";
             last_sec = sec;
             last_frac = frac;
         }
@@ -117,17 +140,17 @@ TEST(time, test1)
 static void sub(const Time &t1, const Time &t2, bool large)
 {
     const Time::Duration d = t1 - t2;
-    // std::cout << "T-T " << t1.raw() << " - " << t2.raw() << " = " << d.raw() << std::endl;
+    // std::cout << "T-T " << t1.raw() << " - " << t2.raw() << " = " << d.raw() << "\n";
     if (large)
-        ASSERT_GE(d.raw(), 100000);
+        ASSERT_GE(d.raw(), 100000U);
     else
-        ASSERT_EQ(d.raw(), 0);
+        ASSERT_EQ(d.raw(), 0U);
 }
 
 static void sub(const Time::Duration &d1, const Time::Duration &d2)
 {
     const Time::Duration d = d1 - d2;
-    // std::cout << "D-D " << d1.raw() << " - " << d2.raw() << " = " << d.raw() << std::endl;
+    // std::cout << "D-D " << d1.raw() << " - " << d2.raw() << " = " << d.raw() << "\n";
     Time::Duration x = d1;
     x -= d2;
     ASSERT_EQ(x, d) << "D-D INCONSISTENCY DETECTED";
@@ -136,7 +159,7 @@ static void sub(const Time::Duration &d1, const Time::Duration &d2)
 static void add(const Time &t1, const Time::Duration &d1)
 {
     const Time t = t1 + d1;
-    // std::cout << "T+D " << t1.raw() << " + " << d1.raw() << " = " << t.raw() << std::endl;
+    // std::cout << "T+D " << t1.raw() << " + " << d1.raw() << " = " << t.raw() << "\n";
     Time x = t1;
     x += d1;
     ASSERT_EQ(x, t) << "T+D INCONSISTENCY DETECTED";
@@ -145,13 +168,13 @@ static void add(const Time &t1, const Time::Duration &d1)
 static void add(const Time::Duration &d1, const Time::Duration &d2)
 {
     const Time::Duration d = d1 + d2;
-    // std::cout << "D+D " << d1.raw() << " + " << d2.raw() << " = " << d.raw() << std::endl;
+    // std::cout << "D+D " << d1.raw() << " + " << d2.raw() << " = " << d.raw() << "\n";
     Time::Duration x = d1;
     x += d2;
     ASSERT_EQ(x, d) << "D+D INCONSISTENCY DETECTED";
 }
 
-TEST(time, timeaddsub)
+TEST(Time, Timeaddsub)
 {
     {
         const Time now = Time::now();

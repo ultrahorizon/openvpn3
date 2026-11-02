@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Base class and factory for compression/decompression objects.
 // Currently we support LZO, Snappy, and LZ4 implementations.
@@ -32,26 +22,20 @@
 #include <openvpn/buffer/buffer.hpp>
 #include <openvpn/frame/frame.hpp>
 #include <openvpn/log/sessionstats.hpp>
-
-#define OPENVPN_LOG_COMPRESS(x)
-#define OPENVPN_LOG_COMPRESS_VERBOSE(x)
-
-#if defined(OPENVPN_DEBUG_COMPRESS)
-#if OPENVPN_DEBUG_COMPRESS >= 1
-#undef OPENVPN_LOG_COMPRESS
-#define OPENVPN_LOG_COMPRESS(x) OPENVPN_LOG(x)
-#endif
-#if OPENVPN_DEBUG_COMPRESS >= 2
-#undef OPENVPN_LOG_COMPRESS_VERBOSE
-#define OPENVPN_LOG_COMPRESS_VERBOSE(x) OPENVPN_LOG(x)
-#endif
-#endif
+#include <openvpn/log/logger.hpp>
 
 namespace openvpn {
-class Compress : public RC<thread_unsafe_refcount>
+
+//! Debugging level for message emitted from compression
+#ifndef OPENVPN_DEBUG_COMPRESS
+#define OPENVPN_DEBUG_COMPRESS 1
+#endif
+
+class Compress : public RC<thread_unsafe_refcount>,
+                 public logging::LoggingMixin<OPENVPN_DEBUG_COMPRESS, logging::LOG_LEVEL_TRACE, Compress>
 {
   public:
-    typedef RCPtr<Compress> Ptr;
+    using Ptr = RCPtr<Compress>;
 
     // Compressor name
     virtual const char *name() const = 0;
@@ -97,7 +81,7 @@ class Compress : public RC<thread_unsafe_refcount>
 
     void do_swap(Buffer &buf, unsigned char op)
     {
-        if (buf.size())
+        if (!buf.empty())
         {
             buf.push_back(buf[0]);
             buf[0] = op;
@@ -117,7 +101,7 @@ class Compress : public RC<thread_unsafe_refcount>
 
     // Push a COMPRESS_V2 header byte (value).
     // Pass value == 0 to omit push.
-    void v2_push(Buffer &buf, int value)
+    void v2_push(Buffer &buf, unsigned char value)
     {
         unsigned char uc = buf[0];
         if (value == 0 && uc != COMPRESS_V2_ESCAPE)
@@ -180,9 +164,7 @@ class CompressContext
 
     OPENVPN_SIMPLE_EXCEPTION(compressor_unavailable);
 
-    CompressContext()
-    {
-    }
+    CompressContext() = default;
 
     CompressContext(const Type t, const bool asym)
         : asym_(asym) // asym indicates asymmetrical compression where only downlink is compressed
@@ -221,10 +203,10 @@ class CompressContext
         {
         case NONE:
             return new CompressNull(frame, stats);
-        case ANY:
         case ANY_LZO:
         case LZO_STUB:
             return new CompressStub(frame, stats, false);
+        case ANY:
         case COMP_STUB:
             return new CompressStub(frame, stats, true);
         case COMP_STUBv2:
@@ -486,22 +468,21 @@ class CompressContext
     {
         if (method == "stub-v2")
             return COMP_STUBv2;
-        else if (method == "lz4-v2")
+        if (method == "lz4-v2")
             return LZ4v2;
-        else if (method == "lz4")
+        if (method == "lz4")
             return LZ4;
-        else if (method == "lzo")
+        if (method == "lzo")
             return LZO;
-        else if (method == "lzo-swap")
+        if (method == "lzo-swap")
             return LZO_SWAP;
-        else if (method == "lzo-stub")
+        if (method == "lzo-stub")
             return LZO_STUB;
-        else if (method == "snappy")
+        if (method == "snappy")
             return SNAPPY;
-        else if (method == "stub")
+        if (method == "stub")
             return COMP_STUB;
-        else
-            return NONE;
+        return NONE;
     }
 
     static Type stub(const Type t)

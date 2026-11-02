@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -51,33 +41,13 @@ class Xml
 
     static std::string format_error(const tinyxml2::XMLDocument &doc)
     {
-#if OVPN_TINYXML2_HAS_ERROR_NAME
         std::string ret = doc.ErrorName();
-#else
-        tinyxml2::XMLError error = doc.ErrorID();
-        std::string ret{"XMLError " + error};
-#endif
-#if OVPN_TINYXML2_HAS_ERROR_STR
         const char *es = doc.ErrorStr();
         if (es)
         {
             ret += ' ';
             ret += es;
         }
-#else
-        const char *es1 = doc.GetErrorStr1();
-        const char *es2 = doc.GetErrorStr2();
-        if (es1)
-        {
-            ret += ' ';
-            ret += es1;
-        }
-        if (es2)
-        {
-            ret += ' ';
-            ret += es2;
-        }
-#endif
         return ret;
     }
 

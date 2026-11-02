@@ -4,50 +4,37 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
 #include <sys/ioctl.h>
 #include <fcntl.h>
-#include <errno.h>
 #include <net/if.h>
 #include <linux/if_tun.h>
 
 #include <openvpn/asio/asioerr.hpp>
 #include <openvpn/netconf/linux/gwnetlink.hpp>
 #include <openvpn/common/action.hpp>
+#include <openvpn/common/numeric_cast.hpp>
 #include <openvpn/tun/builder/setup.hpp>
 #include <openvpn/tun/client/tunbase.hpp>
 #include <openvpn/tun/client/tunconfigflags.hpp>
 #include <openvpn/tun/linux/client/sitnl.hpp>
 #include <openvpn/tun/linux/client/tunsetup.hpp>
 
-namespace openvpn {
-namespace TunNetlink {
+namespace openvpn::TunNetlink {
 
 using namespace openvpn::TunLinuxSetup;
 
 struct NetlinkLinkSet : public Action
 {
-    typedef RCPtr<NetlinkLinkSet> Ptr;
+    using Ptr = RCPtr<NetlinkLinkSet>;
 
-    NetlinkLinkSet()
-    {
-    }
+    NetlinkLinkSet() = default;
 
     NetlinkLinkSet(std::string dev_arg, bool up_arg, int mtu_arg)
         : dev(dev_arg),
@@ -65,32 +52,30 @@ struct NetlinkLinkSet : public Action
         return ret;
     }
 
-    virtual void execute(std::ostream &os) override
+    void execute(std::ostream &os) override
     {
-        int ret;
-
         if (dev.empty())
         {
-            os << "Error: can't call NetlinkLinkSet with no interface" << std::endl;
+            os << "Error: can't call NetlinkLinkSet with no interface\n";
             return;
         }
 
-        ret = SITNL::net_iface_mtu_set(dev, mtu);
+        auto ret = SITNL::net_iface_mtu_set(dev, mtu);
         if (ret)
         {
             os << "Error while executing NetlinkLinkSet " << dev << " mtu " << mtu
-               << ": " << ret << std::endl;
+               << ": " << ret << "\n";
         }
 
         ret = SITNL::net_iface_up(dev, up);
         if (ret)
         {
             os << "Error while executing NetlinkLinkSet " << dev << " up " << up
-               << ": " << ret << std::endl;
+               << ": " << ret << "\n";
         }
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         std::ostringstream os;
         os << "netlink iface " << dev << " link set " << up << " mtu " << mtu;
@@ -104,15 +89,13 @@ struct NetlinkLinkSet : public Action
 
 struct NetlinkAddr4 : public Action
 {
-    typedef RCPtr<NetlinkAddr4> Ptr;
+    using Ptr = RCPtr<NetlinkAddr4>;
 
-    NetlinkAddr4()
-    {
-    }
+    NetlinkAddr4() = default;
 
     NetlinkAddr4(std::string dev_arg,
                  IPv4::Addr &addr_arg,
-                 int prefixlen_arg,
+                 unsigned char prefixlen_arg,
                  IPv4::Addr &broadcast_arg,
                  bool add_arg)
         : dev(dev_arg),
@@ -134,16 +117,15 @@ struct NetlinkAddr4 : public Action
         return ret;
     }
 
-    virtual void execute(std::ostream &os) override
+    void execute(std::ostream &os) override
     {
-        int ret;
-
         if (dev.empty())
         {
-            os << "Error: can't call NetlinkAddr4 with no interface" << std::endl;
+            os << "Error: can't call NetlinkAddr4 with no interface\n";
             return;
         }
 
+        int ret;
         if (add)
         {
             ret = SITNL::net_addr_add(dev, addr, prefixlen, broadcast);
@@ -156,11 +138,11 @@ struct NetlinkAddr4 : public Action
         if (ret)
         {
             os << "Error while executing NetlinkAddr4(add: " << add << ") "
-               << dev << ": " << ret << std::endl;
+               << dev << ": " << ret << "\n";
         }
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         std::ostringstream os;
         os << "netlink iface " << dev << " " << (add ? "add" : "del") << " "
@@ -171,22 +153,20 @@ struct NetlinkAddr4 : public Action
 
     std::string dev;
     IPv4::Addr addr;
-    int prefixlen = 0;
+    unsigned char prefixlen = 0;
     IPv4::Addr broadcast;
     bool add = true;
 };
 
 struct NetlinkAddr6 : public Action
 {
-    typedef RCPtr<NetlinkAddr6> Ptr;
+    using Ptr = RCPtr<NetlinkAddr6>;
 
-    NetlinkAddr6()
-    {
-    }
+    NetlinkAddr6() = default;
 
     NetlinkAddr6(std::string dev_arg,
                  IPv6::Addr &addr_arg,
-                 int prefixlen_arg,
+                 unsigned char prefixlen_arg,
                  bool add_arg)
         : dev(dev_arg),
           addr(addr_arg),
@@ -205,16 +185,15 @@ struct NetlinkAddr6 : public Action
         return ret;
     }
 
-    virtual void execute(std::ostream &os) override
+    void execute(std::ostream &os) override
     {
-        int ret;
-
         if (dev.empty())
         {
-            os << "Error: can't call NetlinkAddr6 with no interface" << std::endl;
+            os << "Error: can't call NetlinkAddr6 with no interface\n";
             return;
         }
 
+        int ret;
         if (add)
         {
             ret = SITNL::net_addr_add(dev, addr, prefixlen);
@@ -227,11 +206,11 @@ struct NetlinkAddr6 : public Action
         if (ret)
         {
             os << "Error while executing NetlinkAddr6(add: " << add << ") "
-               << dev << ": " << ret << std::endl;
+               << dev << ": " << ret << "\n";
         }
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         std::ostringstream os;
         os << "netlink iface " << dev << " " << (add ? "add" : "del") << " "
@@ -241,17 +220,15 @@ struct NetlinkAddr6 : public Action
 
     std::string dev;
     IPv6::Addr addr;
-    int prefixlen = 0;
+    unsigned char prefixlen = 0;
     bool add = true;
 };
 
 struct NetlinkAddr4PtP : public Action
 {
-    typedef RCPtr<NetlinkAddr4PtP> Ptr;
+    using Ptr = RCPtr<NetlinkAddr4PtP>;
 
-    NetlinkAddr4PtP()
-    {
-    }
+    NetlinkAddr4PtP() = default;
 
     NetlinkAddr4PtP(std::string dev_arg,
                     IPv4::Addr local_arg,
@@ -274,16 +251,15 @@ struct NetlinkAddr4PtP : public Action
         return ret;
     }
 
-    virtual void execute(std::ostream &os) override
+    void execute(std::ostream &os) override
     {
-        int ret;
-
         if (dev.empty())
         {
-            os << "Error: can't call NetlinkAddr4PtP with no interface" << std::endl;
+            os << "Error: can't call NetlinkAddr4PtP with no interface\n";
             return;
         }
 
+        int ret;
         if (add)
         {
             ret = SITNL::net_addr_ptp_add(dev, local, remote);
@@ -296,11 +272,11 @@ struct NetlinkAddr4PtP : public Action
         if (ret)
         {
             os << "Error while executing NetlinkAddr4PtP(add: " << add << ") "
-               << dev << ": " << ret << std::endl;
+               << dev << ": " << ret << "\n";
         }
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         return "netlink iface " + dev + " " + (add ? "add" : "del") + " ptp "
                + local.to_string() + " remote " + remote.to_string();
@@ -314,20 +290,20 @@ struct NetlinkAddr4PtP : public Action
 
 struct NetlinkRoute4 : public Action
 {
-    typedef RCPtr<NetlinkRoute4> Ptr;
+    using Ptr = RCPtr<NetlinkRoute4>;
 
-    NetlinkRoute4()
-    {
-    }
+    NetlinkRoute4() = default;
 
     NetlinkRoute4(IPv4::Addr &dst_arg,
                   int prefixlen_arg,
                   IPv4::Addr &gw_arg,
                   std::string dev_arg,
+                  int metric_arg,
                   bool add_arg)
         : route(dst_arg, prefixlen_arg),
           gw(gw_arg),
           dev(dev_arg),
+          metric(metric_arg),
           add(add_arg)
     {
     }
@@ -338,65 +314,66 @@ struct NetlinkRoute4 : public Action
         ret->route = route;
         ret->gw = gw;
         ret->dev = dev;
+        ret->metric = metric;
         return ret;
     }
 
-    virtual void execute(std::ostream &os) override
+    void execute(std::ostream &os) override
     {
-        int ret;
-
         if (dev.empty())
         {
-            os << "Error: can't call NetlinkRoute4 with no interface" << std::endl;
+            os << "Error: can't call NetlinkRoute4 with no interface\n";
             return;
         }
 
+        int ret;
         if (add)
         {
-            ret = SITNL::net_route_add(route, gw, dev, 0, 0);
+            ret = SITNL::net_route_add(route, gw, dev, 0, metric);
         }
         else
         {
-            ret = SITNL::net_route_del(route, gw, dev, 0, 0);
+            ret = SITNL::net_route_del(route, gw, dev, 0, metric);
         }
 
         if (ret)
         {
             os << "Error while executing NetlinkRoute4(add: " << add << ") "
-               << dev << ": " << ret << std::endl;
+               << dev << ": " << ret << "\n";
         }
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         std::ostringstream os;
         os << "netlink route " << (add ? "add" : "del") << " dev " << dev << " "
-           << route << " via " << gw.to_string();
+           << route << " via " << gw.to_string() << " metric " << metric;
         return os.str();
     }
 
     IP::Route4 route;
     IPv4::Addr gw;
     std::string dev;
+    int metric = -1;
     bool add = true;
 };
 
 struct NetlinkRoute6 : public Action
 {
-    typedef RCPtr<NetlinkRoute6> Ptr;
+    using Ptr = RCPtr<NetlinkRoute6>;
 
-    NetlinkRoute6()
-    {
-    }
+    NetlinkRoute6() = default;
 
     NetlinkRoute6(IPv6::Addr &dst_arg,
                   int prefixlen_arg,
                   IPv6::Addr &gw_arg,
                   std::string dev_arg,
+                  int metric_arg,
                   bool add_arg)
         : route(dst_arg, prefixlen_arg),
           gw(gw_arg),
           dev(dev_arg),
+          metric(metric_arg),
           add(add_arg)
     {
     }
@@ -407,46 +384,47 @@ struct NetlinkRoute6 : public Action
         ret->route = route;
         ret->gw = gw;
         ret->dev = dev;
+        ret->metric = metric;
         return ret;
     }
 
-    virtual void execute(std::ostream &os) override
+    void execute(std::ostream &os) override
     {
-        int ret;
-
         if (dev.empty())
         {
-            os << "Error: can't call NetlinkRoute6 with no interface" << std::endl;
+            os << "Error: can't call NetlinkRoute6 with no interface\n";
             return;
         }
 
+        int ret;
         if (add)
         {
-            ret = SITNL::net_route_add(route, gw, dev, 0, 0);
+            ret = SITNL::net_route_add(route, gw, dev, 0, metric);
         }
         else
         {
-            ret = SITNL::net_route_del(route, gw, dev, 0, 0);
+            ret = SITNL::net_route_del(route, gw, dev, 0, metric);
         }
 
         if (ret)
         {
             os << "Error while executing NetlinkRoute6(add: " << add << ") "
-               << dev << ": " << ret << std::endl;
+               << dev << ": " << ret << "\n";
         }
     }
 
-    virtual std::string to_string() const override
+    std::string to_string() const override
     {
         std::ostringstream os;
         os << "netlink route " << (add ? "add" : "del") << " dev " << dev << " "
-           << route << " via " << gw.to_string();
+           << route << " via " << gw.to_string() << " metric " << metric;
         return os.str();
     }
 
     IP::Route6 route;
     IPv6::Addr gw;
     std::string dev;
+    int metric = -1;
     bool add = true;
 };
 
@@ -472,20 +450,20 @@ inline int iface_new(std::ostringstream &os, const std::string &dev, const std::
 
     if (dev.empty())
     {
-        os << "Error: can't call NetlinkLinkNew with no interface" << std::endl;
+        os << "Error: can't call NetlinkLinkNew with no interface\n";
         return ret;
     }
 
     if (type.empty())
     {
-        os << "Error: can't call NetlinkLinkNew with no interfacei type" << std::endl;
+        os << "Error: can't call NetlinkLinkNew with no interfacei type\n";
         return ret;
     }
 
     ret = SITNL::net_iface_new(dev, type);
     if (ret)
     {
-        os << "Error while executing NetlinkLinkNew " << dev << ": " << ret << std::endl;
+        os << "Error while executing NetlinkLinkNew " << dev << ": " << ret << "\n";
     }
 
     return ret;
@@ -497,14 +475,14 @@ inline int iface_del(std::ostringstream &os, const std::string &dev)
 
     if (dev.empty())
     {
-        os << "Error: can't call NetlinkLinkDel with no interface" << std::endl;
+        os << "Error: can't call NetlinkLinkDel with no interface\n";
         return ret;
     }
 
     ret = SITNL::net_iface_del(dev);
     if (ret)
     {
-        os << "Error while executing NetlinkLinkDel " << dev << ": " << ret << std::endl;
+        os << "Error while executing NetlinkLinkDel " << dev << ": " << ret << "\n";
     }
 
     return ret;
@@ -512,7 +490,7 @@ inline int iface_del(std::ostringstream &os, const std::string &dev)
 
 /*inline IPv4::Addr cvt_pnr_ip_v4(const std::string& hexaddr)
 {
-  BufferAllocated v(4, BufferAllocated::CONSTRUCT_ZERO);
+  BufferAllocated v(4, BufAllocFlags::CONSTRUCT_ZERO);
   parse_hex(v, hexaddr);
   if (v.size() != 4)
 throw tun_linux_error("bad hex address");
@@ -524,6 +502,7 @@ inline void add_del_route(const std::string &addr_str,
                           const int prefix_len,
                           const std::string &gateway_str,
                           const std::string &dev,
+                          const int metric,
                           const unsigned int flags,
                           std::vector<IP::Route> *rtvec,
                           Action::Ptr &create,
@@ -538,16 +517,17 @@ inline void add_del_route(const std::string &addr_str,
         if (flags & R_ADD_SYS)
         {
             // ip route add 2001:db8:1::/48 via 2001:db8:1::1
-            NetlinkRoute6::Ptr add(new NetlinkRoute6);
+            const NetlinkRoute6::Ptr add(new NetlinkRoute6);
             add->route.addr = net;
             add->route.prefix_len = prefix_len;
             add->gw = IPv6::Addr::from_string(gateway_str);
             add->dev = dev;
+            add->metric = metric;
             add->add = true;
 
             create = add;
             // for the destroy command, copy the add command but replace "add" with "delete"
-            NetlinkRoute6::Ptr del(add->copy());
+            const NetlinkRoute6::Ptr del(add->copy());
             del->add = false;
             destroy = del;
         }
@@ -564,16 +544,17 @@ inline void add_del_route(const std::string &addr_str,
         if (flags & R_ADD_SYS)
         {
             // ip route add 192.0.2.128/25 via 192.0.2.1
-            NetlinkRoute4::Ptr add(new NetlinkRoute4);
+            const NetlinkRoute4::Ptr add(new NetlinkRoute4);
             add->route.addr = net;
             add->route.prefix_len = prefix_len;
             add->gw = IPv4::Addr::from_string(gateway_str);
             add->dev = dev;
+            add->metric = metric;
             add->add = true;
 
             create = add;
             // for the destroy command, copy the add command but replace "add" with "delete"
-            NetlinkRoute4::Ptr del(add->copy());
+            const NetlinkRoute4::Ptr del(add->copy());
             del->add = false;
             destroy = del;
         }
@@ -587,13 +568,14 @@ inline void add_del_route(const std::string &addr_str,
                           const int prefix_len,
                           const std::string &gateway_str,
                           const std::string &dev,
+                          const int metric,
                           const unsigned int flags, // add interface route to rtvec if defined
                           std::vector<IP::Route> *rtvec,
                           ActionList &create,
                           ActionList &destroy)
 {
     Action::Ptr c, d;
-    add_del_route(addr_str, prefix_len, gateway_str, dev, flags, rtvec, c, d);
+    add_del_route(addr_str, prefix_len, gateway_str, dev, metric, flags, rtvec, c, d);
     create.add(c);
     destroy.add(d);
 }
@@ -604,14 +586,14 @@ inline void iface_up(const std::string &iface_name,
                      ActionList &destroy)
 {
     {
-        NetlinkLinkSet::Ptr add(new NetlinkLinkSet);
+        const NetlinkLinkSet::Ptr add(new NetlinkLinkSet);
         add->dev = iface_name;
         add->up = true;
         add->mtu = mtu;
 
         create.add(add);
         // for the destroy command, copy the add command but replace "up" with "down"
-        NetlinkLinkSet::Ptr del(add->copy());
+        const NetlinkLinkSet::Ptr del(add->copy());
         del->up = false;
         destroy.add(del);
     }
@@ -631,7 +613,7 @@ inline void iface_config(const std::string &iface_name,
     // Set IPv4 Interface
     if (local4)
     {
-        NetlinkAddr4::Ptr add(new NetlinkAddr4);
+        const NetlinkAddr4::Ptr add(new NetlinkAddr4);
         add->addr = IPv4::Addr::from_string(local4->address);
         add->prefixlen = local4->prefix_length;
         add->broadcast = IPv4::Addr::from_string(local4->address)
@@ -646,7 +628,7 @@ inline void iface_config(const std::string &iface_name,
         create.add(add);
 
         // for the destroy command, copy the add command but replace "add" with "delete"
-        NetlinkAddr4::Ptr del(add->copy());
+        const NetlinkAddr4::Ptr del(add->copy());
         del->add = false;
         destroy.add(del);
 
@@ -655,6 +637,7 @@ inline void iface_config(const std::string &iface_name,
                       local4->prefix_length,
                       local4->address,
                       iface_name,
+                      0,
                       R_ADD_DCO,
                       rtvec,
                       create,
@@ -664,7 +647,7 @@ inline void iface_config(const std::string &iface_name,
     // Set IPv6 Interface
     if (local6 && !pull.block_ipv6)
     {
-        NetlinkAddr6::Ptr add(new NetlinkAddr6);
+        const NetlinkAddr6::Ptr add(new NetlinkAddr6);
         add->addr = IPv6::Addr::from_string(local6->address);
         add->prefixlen = local6->prefix_length;
         add->dev = iface_name;
@@ -673,7 +656,7 @@ inline void iface_config(const std::string &iface_name,
         create.add(add);
 
         // for the destroy command, copy the add command but replace "add" with "delete"
-        NetlinkAddr6::Ptr del(add->copy());
+        const NetlinkAddr6::Ptr del(add->copy());
         del->add = false;
         destroy.add(del);
 
@@ -682,6 +665,7 @@ inline void iface_config(const std::string &iface_name,
                       local6->prefix_length,
                       local6->address,
                       iface_name,
+                      0,
                       R_ADD_DCO | R_IPv6,
                       rtvec,
                       create,
@@ -718,6 +702,7 @@ struct TunMethods
                                       route.prefix_length,
                                       local6->gateway,
                                       iface_name,
+                                      route.metric,
                                       R_ADD_ALL | R_IPv6,
                                       rtvec,
                                       create,
@@ -730,6 +715,7 @@ struct TunMethods
                                       route.prefix_length,
                                       local4->gateway,
                                       iface_name,
+                                      route.metric,
                                       R_ADD_ALL,
                                       rtvec,
                                       create,
@@ -743,7 +729,7 @@ struct TunMethods
         // Process exclude routes
         if (!pull.exclude_routes.empty())
         {
-            LinuxGW46Netlink gw(iface_name);
+            const LinuxGW46Netlink gw(iface_name);
 
             for (const auto &route : pull.exclude_routes)
             {
@@ -758,6 +744,7 @@ struct TunMethods
                                       route.prefix_length,
                                       gw.v4.addr().to_string(),
                                       gw.v4.dev(),
+                                      route.metric,
                                       R_ADD_SYS,
                                       rtvec,
                                       create,
@@ -786,8 +773,8 @@ struct TunMethods
                                      destroy);
                 }
 
-                add_del_route("0.0.0.0", 1, local4->gateway, iface_name, R_ADD_ALL, rtvec, create, destroy);
-                add_del_route("128.0.0.0", 1, local4->gateway, iface_name, R_ADD_ALL, rtvec, create, destroy);
+                add_del_route("0.0.0.0", 1, local4->gateway, iface_name, 0, R_ADD_ALL, rtvec, create, destroy);
+                add_del_route("128.0.0.0", 1, local4->gateway, iface_name, 0, R_ADD_ALL, rtvec, create, destroy);
             }
 
             // Process IPv6 redirect-gateway
@@ -806,8 +793,8 @@ struct TunMethods
                                      destroy);
                 }
 
-                add_del_route("0000::", 1, local6->gateway, iface_name, R_ADD_ALL | R_IPv6, rtvec, create, destroy);
-                add_del_route("8000::", 1, local6->gateway, iface_name, R_ADD_ALL | R_IPv6, rtvec, create, destroy);
+                add_del_route("0000::", 1, local6->gateway, iface_name, 0, R_ADD_ALL | R_IPv6, rtvec, create, destroy);
+                add_del_route("8000::", 1, local6->gateway, iface_name, 0, R_ADD_ALL | R_IPv6, rtvec, create, destroy);
             }
         }
 
@@ -823,13 +810,14 @@ struct TunMethods
                                         ActionList &create,
                                         ActionList &destroy)
     {
-        LinuxGW46Netlink gw(tun_iface_name, address);
+        const LinuxGW46Netlink gw(tun_iface_name, address);
 
         if (!ipv6 && gw.v4.defined())
             add_del_route(address,
                           32,
                           gw.v4.addr().to_string(),
                           gw.dev(),
+                          0,
                           R_ADD_SYS,
                           rtvec,
                           create,
@@ -840,11 +828,11 @@ struct TunMethods
                           128,
                           gw.v6.addr().to_string(),
                           gw.dev(),
+                          0,
                           R_IPv6 | R_ADD_SYS,
                           rtvec,
                           create,
                           destroy);
     }
 };
-} // namespace TunNetlink
-} // namespace openvpn
+} // namespace openvpn::TunNetlink

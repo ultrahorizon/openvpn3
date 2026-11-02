@@ -4,33 +4,25 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_ADDR_ADDRPAIR_H
 #define OPENVPN_ADDR_ADDRPAIR_H
 
+#include <charconv>
 #include <sstream>
+#include <string_view>
+#include <system_error>
 
 #include <openvpn/common/exception.hpp>
 #include <openvpn/common/number.hpp>
 #include <openvpn/common/split.hpp>
 #include <openvpn/addr/ip.hpp>
 
-namespace openvpn {
-namespace IP {
+namespace openvpn::IP {
 
 // AddrMaskPair is basically an object that combines an IP address (v4 or v6)
 // with a netmask or prefix length.
@@ -113,35 +105,33 @@ struct AddrMaskPair
         {
             if (s2.empty())
             {
-                const StringPair pair = Split::by_char<StringPair, NullLex, Split::NullLimit>(s1, '/');
+                const auto pair = Split::by_char<StringPair, NullLex, Split::NullLimit>(s1, '/');
                 return from_string_impl(pair, title);
             }
-            else
-            {
-                const StringPair pair(s1, s2);
-                return from_string_impl(pair, title);
-            }
+
+            const StringPair pair(s1, s2);
+            return from_string_impl(pair, title);
         }
         catch (const std::exception &e)
         {
             const StringPair pair(s1, s2);
             error(e, pair.render(), title);
         }
-        return AddrMaskPair(); // NOTREACHED
+        return {}; // NOTREACHED
     }
 
     static AddrMaskPair from_string(const std::string &s, const char *title = nullptr)
     {
         try
         {
-            const StringPair pair = Split::by_char<StringPair, NullLex, Split::NullLimit>(s, '/');
+            const auto pair = Split::by_char<StringPair, NullLex, Split::NullLimit>(s, '/');
             return from_string_impl(pair, title);
         }
         catch (const std::exception &e)
         {
             error(e, s, title);
         }
-        return AddrMaskPair(); // NOTREACHED
+        return {}; // NOTREACHED
     }
 
     static AddrMaskPair from_string(const StringPair &pair, const char *title = nullptr)
@@ -154,17 +144,13 @@ struct AddrMaskPair
         {
             error(e, pair.render(), title);
         }
-        return AddrMaskPair(); // NOTREACHED
+        return {}; // NOTREACHED
     }
 
     std::string to_string(const bool netmask_form = false) const
     {
-        std::ostringstream os;
-        if (netmask_form)
-            os << addr.to_string() << '/' << netmask.to_string();
-        else
-            os << addr.to_string() << '/' << netmask.prefix_len();
-        return os.str();
+        return netmask_form ? addr.to_string() + '/' + netmask.to_string()
+                            : addr.to_string() + '/' + std::to_string(netmask.prefix_len());
     }
 
     bool is_canonical() const
@@ -174,12 +160,7 @@ struct AddrMaskPair
 
     Addr::Version version() const
     {
-        const Addr::Version v1 = addr.version();
-        const Addr::Version v2 = netmask.version();
-        if (v1 == v2)
-            return v1;
-        else
-            return Addr::UNSPEC;
+        return addr.version() == netmask.version() ? addr.version() : Addr::UNSPEC;
     }
 
     Addr addr;
@@ -193,6 +174,28 @@ struct AddrMaskPair
         OPENVPN_THROW(addr_pair_mask_parse_error, "AddrMaskPair parse error '" << title << "': " << s << " : " << e.what());
     }
 
+    /**
+     * @brief Parses an %IP prefix length from a string view.
+     * @param s String view containing the prefix length to parse.
+     * @return Parsed prefix length as an unsigned integer.
+     * @throws number_parse_exception If parsing fails, overflows, or exceeds @c Addr::V6_SIZE.
+     */
+    static unsigned int parse_prefix_len_throw(std::string_view s)
+    {
+        unsigned int val = 0;
+        const auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), val);
+
+        // ec catches overflow (result_out_of_range) and invalid format (invalid_argument);
+        // ptr check ensures complete string consumption. The widest-address bound keeps the
+        // parse away from the overflow that defeats netmask_from_prefix_len's own range guard,
+        // which still applies the per-version bound.
+        if (ec != std::errc{} || ptr != s.data() + s.size() || val > Addr::V6_SIZE)
+        {
+            throw number_parse_exception("prefix length");
+        }
+        return val;
+    }
+
     static AddrMaskPair from_string_impl(const StringPair &pair, const char *title = nullptr)
     {
         AddrMaskPair ret;
@@ -203,7 +206,7 @@ struct AddrMaskPair
             {
                 if (is_number(pair[1].c_str()))
                     ret.netmask = Addr::netmask_from_prefix_len(ret.addr.version(),
-                                                                parse_number_throw<unsigned int>(pair[1], "prefix length"));
+                                                                parse_prefix_len_throw(pair[1]));
                 else
                     ret.netmask = Addr::from_string(pair[1]);
                 ret.netmask.prefix_len(); // verify that netmask is ok
@@ -218,7 +221,6 @@ struct AddrMaskPair
     }
 };
 OPENVPN_OSTREAM(AddrMaskPair, to_string)
-} // namespace IP
-} // namespace openvpn
+} // namespace openvpn::IP
 
 #endif

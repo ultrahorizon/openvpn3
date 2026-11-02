@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Low-level methods used to implement NTLMv2 proxy authentication
 
@@ -35,12 +25,12 @@
 #include <openvpn/common/split.hpp>
 #include <openvpn/common/unicode.hpp>
 #include <openvpn/common/string.hpp>
+#include <openvpn/common/numeric_cast.hpp>
 #include <openvpn/time/time.hpp>
 #include <openvpn/buffer/buffer.hpp>
 #include <openvpn/crypto/digestapi.hpp>
 
-namespace openvpn {
-namespace HTTPProxy {
+namespace openvpn::HTTPProxy {
 
 class NTLM
 {
@@ -60,7 +50,7 @@ class NTLM
                                const std::string &phase_2_response,
                                const std::string &dom_username,
                                const std::string &password,
-                               RandomAPI &rng)
+                               StrongRandomAPI &rng)
     {
         // sanity checks
         if (dom_username.empty())
@@ -69,10 +59,7 @@ class NTLM
             throw Exception("password is blank");
 
         if (phase_2_response.size() < 32)
-            throw Exception("phase2 response from server too short (" + std::to_string(phase_2_response.size()) + ")");
-
-        // ensure that RNG is crypto-strength
-        rng.assert_crypto();
+            throw Exception("phase2 base64 response from server too short (" + std::to_string(phase_2_response.size()) + ")");
 
         // split domain\username
         std::string domain;
@@ -80,16 +67,19 @@ class NTLM
         split_domain_username(dom_username, domain, username);
 
         // convert password from utf-8 to utf-16 and take an MD4 hash of it
-        BufferPtr password_u = Unicode::string_to_utf16(password);
-        DigestInstance::Ptr md4_ctx(digest_factory.new_digest(CryptoAlgs::MD4));
+        const BufferPtr password_u = Unicode::string_to_utf16(password);
+        const DigestInstance::Ptr md4_ctx(digest_factory.new_digest(CryptoAlgs::MD4));
         md4_ctx->update(password_u->c_data(), password_u->size());
         unsigned char md4_hash[21];
         md4_ctx->final(md4_hash);
         std::memset(md4_hash + 16, 0, 5); // pad to 21 bytes
 
         // decode phase_2_response from base64 to raw data
-        BufferAllocated response(phase_2_response.size(), 0);
+        BufferAllocated response(phase_2_response.size());
         base64->decode(response, phase_2_response);
+
+        if (response.size() < 32)
+            throw Exception("phase2 decoded response from server too short (" + std::to_string(response.size()) + ")");
 
         // extract the challenge from bytes 24-31 in the response
         unsigned char challenge[8];
@@ -100,8 +90,8 @@ class NTLM
         // convert to utf-16, and run it through HMAC-MD5
         // keyed to md4_hash
         const std::string ud = string::to_upper_copy(username) + domain;
-        BufferPtr ud_u = Unicode::string_to_utf16(ud);
-        HMACInstance::Ptr hmac_ctx1(digest_factory.new_hmac(CryptoAlgs::MD5, md4_hash, 16));
+        const BufferPtr ud_u = Unicode::string_to_utf16(ud);
+        const HMACInstance::Ptr hmac_ctx1(digest_factory.new_hmac(CryptoAlgs::MD5, md4_hash, 16));
         hmac_ctx1->update(ud_u->c_data(), ud_u->size());
         unsigned char ntlmv2_hash[16];
         hmac_ctx1->final(ntlmv2_hash);
@@ -119,7 +109,7 @@ class NTLM
 
         // add target information block to the blob
         size_t tib_len = 0;
-        if (response[0x16] & 0x80u) // check for Target Information block (TIB)
+        if (response[0x16] & 0x80U) // check for Target Information block (TIB)
         {
             tib_len = response[0x28]; // get TIB size
             if (tib_len > 96)
@@ -142,7 +132,7 @@ class NTLM
         std::memcpy(&ntlmv2_response[8], challenge, 8);
 
         // hmac-md5
-        HMACInstance::Ptr hmac_ctx2(digest_factory.new_hmac(CryptoAlgs::MD5, ntlmv2_hash, 16));
+        const HMACInstance::Ptr hmac_ctx2(digest_factory.new_hmac(CryptoAlgs::MD5, ntlmv2_hash, 16));
         hmac_ctx2->update(&ntlmv2_response[8], ntlmv2_blob_size + 8);
         unsigned char ntlmv2_hmacmd5[16];
         hmac_ctx2->final(ntlmv2_hmacmd5);
@@ -152,23 +142,24 @@ class NTLM
         std::memcpy(ntlmv2_response, ntlmv2_hmacmd5, 16);
 
         // start building phase3 message (what we return to caller)
-        BufferAllocated phase3(0x40, BufferAllocated::ARRAY | BufferAllocated::CONSTRUCT_ZERO | BufferAllocated::GROW);
+        BufferAllocated phase3(0x40, BufAllocFlags::ARRAY | BufAllocFlags::CONSTRUCT_ZERO | BufAllocFlags::GROW);
         std::strcpy((char *)phase3.data(), "NTLMSSP"); // signature
         phase3[8] = 3;                                 // type 3
 
         // NTLMv2 response
-        add_security_buffer(0x14, ntlmv2_response, ntlmv2_blob_size + 16, phase3);
+        add_security_buffer(0x14, ntlmv2_response, numeric_cast<unsigned char>(ntlmv2_blob_size + 16), phase3);
 
         // username
-        add_security_buffer(0x24, username.c_str(), username.length(), phase3);
+        add_security_buffer(0x24, username.c_str(), numeric_cast<unsigned char>(username.length()), phase3);
 
         // Set domain. If <domain> is empty, default domain will be used (i.e. proxy's domain).
-        add_security_buffer(0x1c, domain.c_str(), domain.size(), phase3);
+        add_security_buffer(0x1c, domain.c_str(), numeric_cast<unsigned char>(domain.size()), phase3);
 
         // other security buffers will be empty
-        phase3[0x10] = phase3.size(); // lm not used
-        phase3[0x30] = phase3.size(); // no workstation name supplied
-        phase3[0x38] = phase3.size(); // no session key
+        const unsigned char phase3_size = static_cast<unsigned char>(phase3.size());
+        phase3[0x10] = phase3_size; // lm not used
+        phase3[0x30] = phase3_size; // no workstation name supplied
+        phase3[0x38] = phase3_size; // no session key
 
         // flags
         phase3[0x3c] = 0x02; // negotiate oem
@@ -207,7 +198,7 @@ class NTLM
 
     static void split_domain_username(const std::string &combined, std::string &domain, std::string &username)
     {
-        typedef std::vector<std::string> StringList;
+        using StringList = std::vector<std::string>;
         StringList sl;
         sl.reserve(2);
         Split::by_char_void<StringList, NullLex, Split::NullLimit>(sl, combined, '\\', 1);
@@ -225,7 +216,6 @@ class NTLM
             throw Exception("split_domain_username failed");
     }
 };
-} // namespace HTTPProxy
-} // namespace openvpn
+} // namespace openvpn::HTTPProxy
 
 #endif

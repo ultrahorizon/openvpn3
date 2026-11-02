@@ -45,7 +45,7 @@ public:
 	// to it.
 	BufferPtr obfuscate(const Buffer &buffer_arg)
 	{
-		BufferPtr buffer(new BufferAllocated(buffer_arg, BufferAllocated::ARRAY));
+		BufferPtr buffer = BufferAllocatedRc::Create(buffer_arg, BufAllocFlags::ARRAY);
 		obfuscate_buffer(*buffer);
 		return buffer;
 	}
@@ -54,7 +54,7 @@ private:
 	BufferAllocated key_;
 
 	UHXORBuffer(const std::string &key_hex)
-		: key_(0, BufferAllocated::ARRAY|BufferAllocated::CONSTRUCT_ZERO|BufferAllocated::GROW)
+		: key_(0, BufAllocFlags::ARRAY | BufAllocFlags::CONSTRUCT_ZERO | BufAllocFlags::GROW)
 	{
 		// parse hex to byte buffer or throw exception
 		try {
@@ -73,7 +73,7 @@ private:
 		unsigned char *key,
 		size_t len
 	) {
-		for (int i = 0; i < len; i++) {
+		for (size_t i = 0; i < len; i++) {
 			buf[i] ^= key[i];
 		}
 	}

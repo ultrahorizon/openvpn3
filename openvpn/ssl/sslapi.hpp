@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // API for SSL implementations
 
@@ -45,7 +35,9 @@
 #include <openvpn/ssl/tls_remote.hpp>
 #include <openvpn/ssl/tls_cert_profile.hpp>
 #include <openvpn/ssl/sess_ticket.hpp>
+#include <openvpn/ssl/cn_reject_handler.hpp>
 #include <openvpn/random/randapi.hpp>
+#include "openvpn/log/logger.hpp"
 
 namespace openvpn {
 
@@ -63,7 +55,7 @@ class SSLAPI : public RC<thread_unsafe_refcount>
         TLS_WARN_SIG_SHA1 = (1 << 1)
     };
 
-    typedef RCPtr<SSLAPI> Ptr;
+    using Ptr = RCPtr<SSLAPI>;
 
     virtual void start_handshake() = 0;
     virtual ssize_t write_cleartext_unbuffered(const void *data, const size_t size) = 0;
@@ -78,6 +70,20 @@ class SSLAPI : public RC<thread_unsafe_refcount>
     virtual bool did_full_handshake() = 0;
     virtual const AuthCert::Ptr &auth_cert() const = 0;
     virtual void mark_no_cache() = 0; // prevent caching of client-side session (only meaningful when client_session_tickets is enabled)
+
+    /**
+     * @brief Have the server's SNI handler select by @p hint instead of the ClientHello SNI
+     *
+     * A hint the handler does not recognize keeps the default context; the SNI is
+     * ignored either way, so the client cannot pick a context the hint rules out.
+     * A no-op without SNI handler support.
+     *
+     * @param hint  the name, or empty for none
+     */
+    virtual void set_sni_hint(std::string hint)
+    {
+    }
+
     uint32_t get_tls_warnings() const
     {
         return tls_warnings;
@@ -87,7 +93,8 @@ class SSLAPI : public RC<thread_unsafe_refcount>
     uint32_t tls_warnings = 0; // bitfield of SSLAPI::TLSWarnings
 };
 
-class SSLFactoryAPI : public RC<thread_unsafe_refcount>
+class SSLFactoryAPI : public RC<thread_unsafe_refcount>,
+                      public logging::LoggingMixin<logging::LOG_LEVEL_VERB, logging::LOG_LEVEL_TRACE, SSLFactoryAPI>
 {
   public:
     OPENVPN_EXCEPTION(ssl_options_error);
@@ -95,7 +102,7 @@ class SSLFactoryAPI : public RC<thread_unsafe_refcount>
     OPENVPN_EXCEPTION(ssl_external_pki);
     OPENVPN_SIMPLE_EXCEPTION(ssl_ciphertext_in_overflow);
 
-    typedef RCPtr<SSLFactoryAPI> Ptr;
+    using Ptr = RCPtr<SSLFactoryAPI>;
 
     // create a new SSLAPI instance
     virtual SSLAPI::Ptr ssl() = 0;
@@ -114,7 +121,7 @@ class SSLFactoryAPI : public RC<thread_unsafe_refcount>
 class SSLConfigAPI : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<SSLConfigAPI> Ptr;
+    using Ptr = RCPtr<SSLConfigAPI>;
 
     enum LoadFlags
     {
@@ -125,7 +132,7 @@ class SSLConfigAPI : public RC<thread_unsafe_refcount>
 
     std::string private_key_type_string() const
     {
-        PKType::Type type = private_key_type();
+        const PKType::Type type = private_key_type();
 
         switch (type)
         {
@@ -147,13 +154,14 @@ class SSLConfigAPI : public RC<thread_unsafe_refcount>
 
     virtual void set_mode(const Mode &mode_arg) = 0;
     virtual const Mode &get_mode() const = 0;
-    virtual void set_external_pki_callback(ExternalPKIBase *external_pki_arg) = 0;             // private key alternative
-    virtual void set_session_ticket_handler(TLSSessionTicketBase *session_ticket_handler) = 0; // server side
-    virtual void set_client_session_tickets(const bool v) = 0;                                 // client side
-    virtual void enable_legacy_algorithms(const bool v) = 0;                                   // loads legacy+default provider in OpenSSL 3
-    virtual void set_sni_handler(SNI::HandlerBase *sni_handler) = 0;                           // server side
-    virtual void set_sni_name(const std::string &sni_name_arg) = 0;                            // client side
+    virtual void set_external_pki_callback(ExternalPKIBase *external_pki_arg, const std::string &alias) = 0; // private key alternative
+    virtual void set_session_ticket_handler(TLSSessionTicketBase *session_ticket_handler) = 0;               // server side
+    virtual void set_client_session_tickets(const bool v) = 0;                                               // client side
+    virtual void enable_legacy_algorithms(const bool v) = 0;                                                 // loads legacy+default provider in OpenSSL 3
+    virtual void set_sni_handler(SNI::HandlerBase *sni_handler) = 0;                                         // server side
+    virtual void set_sni_name(const std::string &sni_name_arg) = 0;                                          // client side
     virtual void set_private_key_password(const std::string &pwd) = 0;
+    virtual void set_cn_reject_handler(CommonNameReject *cn_reject_handler_arg) = 0;
     virtual void load_ca(const std::string &ca_txt, bool strict) = 0;
     virtual void load_crl(const std::string &crl_txt) = 0;
     virtual void load_cert(const std::string &cert_txt) = 0;
@@ -175,12 +183,13 @@ class SSLConfigAPI : public RC<thread_unsafe_refcount>
     virtual void set_remote_cert_tls(const KUParse::TLSWebType wt) = 0;
     virtual void set_tls_remote(const std::string &tls_remote_arg) = 0;
     virtual void set_tls_version_min(const TLSVersion::Type tvm) = 0;
+    virtual void set_tls_version_max(const TLSVersion::Type tvm) = 0;
     virtual void set_tls_version_min_override(const std::string &override) = 0;
     virtual void set_tls_cert_profile(const TLSCertProfile::Type type) = 0;
     virtual void set_tls_cert_profile_override(const std::string &override) = 0;
     virtual void set_local_cert_enabled(const bool v) = 0;
     virtual void set_x509_track(X509Track::ConfigSet x509_track_config_arg) = 0;
-    virtual void set_rng(const RandomAPI::Ptr &rng_arg) = 0;
+    virtual void set_rng(const StrongRandomAPI::Ptr &rng_arg) = 0;
     virtual void load(const OptionList &opt, const unsigned int lflags) = 0;
 
 #ifdef OPENVPN_JSON_INTERNAL

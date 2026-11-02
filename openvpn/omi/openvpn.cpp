@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // OpenVPN 3 client with Management Interface
 
@@ -69,20 +59,21 @@ class Client : public ClientAPI::OpenVPNClient
     }
 
   private:
-    bool socket_protect(int socket, std::string remote, bool ipv6) override
+    bool socket_protect(openvpn_io::detail::socket_type socket, std::string remote, bool ipv6) override
     {
         return true;
     }
 
-    virtual bool pause_on_connection_timeout() override
+    bool pause_on_connection_timeout() override
     {
         return false;
     }
 
-    virtual void event(const ClientAPI::Event &ev) override;
-    virtual void log(const ClientAPI::LogInfo &msg) override;
-    virtual void external_pki_cert_request(ClientAPI::ExternalPKICertRequest &certreq) override;
-    virtual void external_pki_sign_request(ClientAPI::ExternalPKISignRequest &signreq) override;
+    void event(const ClientAPI::Event &ev) override;
+    void log(const ClientAPI::LogInfo &msg) override;
+    void external_pki_cert_request(ClientAPI::ExternalPKICertRequest &certreq) override;
+    void external_pki_sign_request(ClientAPI::ExternalPKISignRequest &signreq) override;
+    void acc_event(const openvpn::ClientAPI::AppCustomControlMessageEvent &event) override;
 
     OMI *parent;
 };
@@ -146,7 +137,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
         OMICore::start(opt);
     }
 
-    virtual void log(const ClientAPI::LogInfo &msg) override
+    void log(const ClientAPI::LogInfo &msg) override
     {
         openvpn_io::post(io_context, [this, msg]()
                          { log_msg(msg); });
@@ -167,6 +158,11 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
     void external_pki_cert_request(ClientAPI::ExternalPKICertRequest &certreq)
     {
         // not currently supported, <cert> must be in config
+    }
+
+    virtual void acc_event(const openvpn::ClientAPI::AppCustomControlMessageEvent &event)
+    {
+        // ignored
     }
 
     void external_pki_sign_request(ClientAPI::ExternalPKISignRequest &signreq)
@@ -251,7 +247,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
         }
     }
 
-    virtual bool omi_command_is_multiline(const std::string &arg0, const Option &o) override
+    bool omi_command_is_multiline(const std::string &arg0, const Option &o) override
     {
         if (arg0 == "rsa-sig")
             return true;
@@ -259,7 +255,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
     }
 
   private:
-    virtual bool omi_command_in(const std::string &arg0, const Command &cmd) override
+    bool omi_command_in(const std::string &arg0, const Command &cmd) override
     {
         switch (arg0.at(0))
         {
@@ -300,7 +296,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
         return false;
     }
 
-    virtual void omi_done(const bool eof) override
+    void omi_done(const bool eof) override
     {
         // OPENVPN_LOG("OMI DONE eof=" << eof);
     }
@@ -316,7 +312,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
                 const Option &o = opt[*i];
                 o.touch();
                 const std::string &k = o.get(1, 64);
-                if (string::starts_with(k, "IV_") || string::starts_with(k, "UV_"))
+                if (k.starts_with("IV_") || k.starts_with("UV_"))
                 {
                     const std::string &v = o.get(2, 256);
                     ret.emplace_back(k, v);
@@ -326,7 +322,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
         return ret;
     }
 
-    virtual void omi_start_connection() override
+    void omi_start_connection() override
     {
         try
         {
@@ -477,16 +473,12 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
                 // response contains only challenge text
                 creds->response = auth_password;
             }
-            creds->cachePassword = !auth_nocache;
-            creds->replacePasswordWithSessionID = true;
         }
         else if (type == "Auth")
         {
             creds.reset(new ClientAPI::ProvideCreds);
             creds->username = username;
             creds->password = password;
-            creds->replacePasswordWithSessionID = true;
-            creds->cachePassword = !auth_nocache;
         }
         else if (type == "HTTP Proxy")
         {
@@ -648,12 +640,12 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
             if (thread)
                 thread->join(); // may throw if thread has already exited
         }
-        catch (const std::exception &e)
+        catch (const std::exception &)
         {
         }
     }
 
-    virtual bool omi_stop() override
+    bool omi_stop() override
     {
         bool ret = false;
 
@@ -681,7 +673,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
         {
             send(string::add_trailing_crlf_copy(fe));
             if (is_errors_to_stderr())
-                std::cerr << fe << std::endl;
+                std::cerr << fe << "\n";
             OPENVPN_LOG_STRING(fe + '\n');
             ret = true;
         }
@@ -714,19 +706,19 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
 				   } });
     }
 
-    virtual void omi_sigterm() override
+    void omi_sigterm() override
     {
         if (client)
             set_final_error(gen_state_msg(true, "EXITING", "exit-with-notification"));
         stop();
     }
 
-    virtual bool omi_is_sighup_implemented() override
+    bool omi_is_sighup_implemented() override
     {
         return true;
     }
 
-    virtual void omi_sighup() override
+    void omi_sighup() override
     {
         if (client)
             client->reconnect(1);
@@ -889,7 +881,7 @@ class OMI : public OMICore, public ClientAPI::LogReceiver
             reconnect_reason = "";
 
             // generate a TCP_CONNECT event if TCP connection
-            if (ci && string::starts_with(ci->serverProto, "TCP"))
+            if (ci && ci->serverProto.starts_with("TCP"))
                 state_line(gen_state_msg(false, "TCP_CONNECT", ""));
 
             // push the event string to state notification/history
@@ -1042,6 +1034,12 @@ void Client::external_pki_sign_request(ClientAPI::ExternalPKISignRequest &signre
     parent->external_pki_sign_request(signreq);
 }
 
+void Client::acc_event(const openvpn::ClientAPI::AppCustomControlMessageEvent &event)
+{
+    parent->acc_event(event);
+}
+
+
 int run(OptionList opt)
 {
     openvpn_io::io_context io_context(1);
@@ -1051,9 +1049,7 @@ int run(OptionList opt)
 
     try
     {
-#if _WIN32_WINNT >= 0x0600           // Vista+
-        TunWin::NRPT::delete_rule(); // delete stale NRPT rules
-#endif
+        TunWin::NRPT::delete_rules(0); // delete stale NRPT rules
         omi.reset(new OMI(io_context, std::move(opt)));
         omi->start();
         io_context_run_called = true;
@@ -1066,7 +1062,7 @@ int run(OptionList opt)
             omi->stop();
         if (io_context_run_called)
             io_context.poll(); // execute completion handlers,
-        std::cerr << "openvpn: run loop exception: " << e.what() << std::endl;
+        std::cerr << "openvpn: run loop exception: " << e.what() << "\n";
         ret = 1;
     }
     return ret;
@@ -1084,14 +1080,14 @@ int main(int argc, char *argv[])
         }
         else
         {
-            std::cout << log_version() << std::endl;
-            std::cout << "Usage: openvpn [args...]" << std::endl;
+            std::cout << log_version() << "\n";
+            std::cout << "Usage: openvpn [args...]\n";
             ret = 2;
         }
     }
     catch (const std::exception &e)
     {
-        std::cerr << "openvpn: " << e.what() << std::endl;
+        std::cerr << "openvpn: " << e.what() << "\n";
         ret = 1;
     }
     return ret;

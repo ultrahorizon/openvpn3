@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_PROXY_PROXYAUTH_H
 #define OPENVPN_PROXY_PROXYAUTH_H
@@ -28,18 +18,15 @@
 #include <openvpn/common/split.hpp>
 #include <openvpn/http/header.hpp>
 
-namespace openvpn {
-namespace HTTPProxy {
+namespace openvpn::HTTPProxy {
 
 // parse the Proxy-Authenticate HTTP header
 class ProxyAuthenticate : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<ProxyAuthenticate> Ptr;
+    using Ptr = RCPtr<ProxyAuthenticate>;
 
-    ProxyAuthenticate()
-    {
-    }
+    ProxyAuthenticate() = default;
 
     ProxyAuthenticate(const std::string &line)
     {
@@ -56,8 +43,8 @@ class ProxyAuthenticate : public RC<thread_unsafe_refcount>
     std::string to_string() const
     {
         std::ostringstream out;
-        out << "Proxy-Authenticate header" << std::endl;
-        out << "method=" << method << std::endl;
+        out << "Proxy-Authenticate header\n";
+        out << "method=" << method << '\n';
         out << parms.to_string();
         return out.str();
     }
@@ -69,7 +56,7 @@ class ProxyAuthenticate : public RC<thread_unsafe_refcount>
     void do_parse(const std::string &line)
     {
         std::vector<std::string> tuple = Split::by_char<std::vector<std::string>, StandardLex, Split::NullLimit>(line, ' ', 0, 1);
-        if (tuple.size() >= 1)
+        if (!tuple.empty())
             method = tuple[0];
         if (tuple.size() == 2)
         {
@@ -83,7 +70,6 @@ class ProxyAuthenticate : public RC<thread_unsafe_refcount>
         }
     }
 };
-} // namespace HTTPProxy
-} // namespace openvpn
+} // namespace openvpn::HTTPProxy
 
 #endif

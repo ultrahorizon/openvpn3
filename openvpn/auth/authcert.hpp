@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_AUTH_AUTHCERT_H
 #define OPENVPN_AUTH_AUTHCERT_H
@@ -32,7 +22,6 @@
 
 #include <openvpn/common/exception.hpp>
 #include <openvpn/common/rc.hpp>
-#include <openvpn/common/string.hpp>
 #include <openvpn/common/hexstr.hpp>
 #include <openvpn/common/binprefix.hpp>
 #include <openvpn/common/to_string.hpp>
@@ -53,7 +42,7 @@ class AuthCert : public RC<thread_unsafe_refcount>
     friend class OpenSSLContext;
     friend class MbedTLSContext;
 
-    typedef RCPtr<AuthCert> Ptr;
+    using Ptr = RCPtr<AuthCert>;
 
     class Fail
     {
@@ -187,7 +176,7 @@ class AuthCert : public RC<thread_unsafe_refcount>
         bool defined() const
         {
             for (size_t i = 0; i < 5; ++i)
-                if (serial_number32[i] != 0xffffffffu)
+                if (serial_number32[i] != 0xffffffffU)
                     return true;
             return false;
         }
@@ -324,7 +313,7 @@ class AuthCert : public RC<thread_unsafe_refcount>
                         }
                         if (i < 0)
                             throw Exception("serial number too large (C1)");
-                        serial_number[i--] |= parse_hex(c) << 4;
+                        serial_number[i--] |= static_cast<uint8_t>(parse_hex(c) << 4);
                         state = C2;
                         break;
                     default:
@@ -446,16 +435,14 @@ class AuthCert : public RC<thread_unsafe_refcount>
     {
         if (openssl_fmt)
             return render_hex_sep(issuer_fp, sizeof(issuer_fp), ':', true);
-        else
-            return render_hex(issuer_fp, sizeof(issuer_fp), false);
+        return render_hex(issuer_fp, sizeof(issuer_fp), false);
     }
 
     std::string normalize_cn() const // remove trailing "_AUTOLOGIN" from AS certs
     {
-        if (string::ends_with(cn, "_AUTOLOGIN"))
+        if (cn.ends_with("_AUTOLOGIN"))
             return cn.substr(0, cn.length() - 10);
-        else
-            return cn;
+        return cn;
     }
 
     // Allow sni_metadata object, if it exists, to generate the client name.
@@ -464,8 +451,7 @@ class AuthCert : public RC<thread_unsafe_refcount>
     {
         if (sni_metadata)
             return sni_metadata->sni_client_name(*this);
-        else
-            return normalize_cn();
+        return normalize_cn();
     }
 
     const std::string &get_sni() const
@@ -509,8 +495,7 @@ class AuthCert : public RC<thread_unsafe_refcount>
     {
         if (fail)
             return fail->to_string(true);
-        else
-            return "OK";
+        return "OK";
     }
 
 #ifndef UNIT_TEST

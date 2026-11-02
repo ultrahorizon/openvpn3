@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 #include <iostream>
 
 #include <openvpn/common/file.hpp>
@@ -12,7 +12,7 @@
 
 using namespace openvpn;
 
-typedef CertCRLListTemplate<OpenSSLPKI::X509List, OpenSSLPKI::CRLList> CertCRLList;
+using CertCRLList = CertCRLListTemplate<OpenSSLPKI::X509List, OpenSSLPKI::CRLList>;
 
 template <typename VEC>
 VEC move_contents(VEC &src)
@@ -33,24 +33,23 @@ void move_contents(CertCRLList &dest, CertCRLList &src)
 
 void test_cert_crl()
 {
-    OPENVPN_LOG("======= TEST CERT CRL =======");
-    std::string cert_crl_txt = read_text(CERTDIR "/certcrl.pem");
+    const std::string cert_crl_txt = read_text(CERTDIR "/certcrl.pem");
 
     CertCRLList ccl, ccl2;
     ccl.parse_pem(cert_crl_txt, "TEST1");
-    CertCRLList ccl1(ccl);
+    const CertCRLList ccl1(ccl);
     ccl2 = ccl1;
     ccl2 = ccl1;
     std::string rend2 = ccl2.render_pem();
 
     CertCRLList ccl3;
     ccl3.parse_pem_file(CERTDIR "/certcrl.pem");
-    std::string rend3 = ccl3.render_pem();
+    const std::string rend3 = ccl3.render_pem();
 
     ASSERT_EQ(rend2, rend3);
 
     CertCRLList ccl4(rend3, "TEST2");
-    CertCRLList ccl5(std::move(ccl4));
+    const CertCRLList ccl5(std::move(ccl4));
     ccl2 = ccl5;
     rend2 = ccl2.render_pem();
     ASSERT_EQ(rend2, rend3);
@@ -60,31 +59,58 @@ void test_cert_crl()
     rend2 = ccl2.render_pem();
     ASSERT_EQ(rend2, rend3);
 
-    OpenSSLPKI::X509Store xs(ccl2);
+    const OpenSSLPKI::X509Store xs(ccl2);
 
     // std::cout << rend2;
 }
 
+constexpr const char *testcert = "-----BEGIN CERTIFICATE-----\n"
+                                 "MIIBuzCCAUCgAwIBAgIUEwa9vm0C63Cc/kFu8lFmOKFUdccwCgYIKoZIzj0EAwIw\n"
+                                 "EzERMA8GA1UEAwwIdW5pdHRlc3QwIBcNMjQwNTE1MTA1NDM3WhgPMjA3OTAyMTYx\n"
+                                 "MDU0MzdaMBMxETAPBgNVBAMMCHVuaXR0ZXN0MHYwEAYHKoZIzj0CAQYFK4EEACID\n"
+                                 "YgAEEVRoVjNQeYLPBlst7a7vxm6KUT5TL8iDel5I7Vt0CD2saQ+E0oUrMrk/W7uB\n"
+                                 "FhbBDbKu+AiXBmudIjQbrx4JiNPD7wouGCY3Up6C6hdDMQAtPqIIWOGj/13OshyY\n"
+                                 "EX/eo1MwUTAdBgNVHQ4EFgQUONymlHRoIr+aGp7kss/Yl5gEOHQwHwYDVR0jBBgw\n"
+                                 "FoAUONymlHRoIr+aGp7kss/Yl5gEOHQwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjO\n"
+                                 "PQQDAgNpADBmAjEAx4NDBMtTW/4qeSdedxpNH4DCnI5iue+22UNTt/dGWBMzcYF7\n"
+                                 "xW53r2QVcCKzoJABAjEA7//UDtN8gZgfiYaCXh9Qwew8DSsn1+B9mY6e3hQQ00nJ\n"
+                                 "Qv3xi0OJFoAxAQBG0weY\n"
+                                 "-----END CERTIFICATE-----";
+
+void test_output_pem()
+{
+    BIO *bio_in = ::BIO_new_mem_buf(const_cast<char *>(testcert), static_cast<int>(std::strlen(testcert)));
+
+    ::X509 *cert = ::PEM_read_bio_X509(bio_in, nullptr, nullptr, nullptr);
+
+    ASSERT_TRUE(cert);
+
+    const std::string pem_out = OpenSSLPKI::X509_get_pem_encoding(cert);
+
+    EXPECT_EQ(pem_out, testcert);
+
+    ::X509_free(cert);
+    ::BIO_free(bio_in);
+}
+
 void test_pkey()
 {
-    OPENVPN_LOG("======= TEST PKEY =======");
-
-    std::string pkey_txt = read_text(CERTDIR "/key.pem");
+    const std::string pkey_txt = read_text(CERTDIR "/key.pem");
 
     OpenSSLPKI::PKey pkey, pkey2;
     pkey.parse_pem(pkey_txt, "TEST0", nullptr);
-    OpenSSLPKI::PKey pkey1(pkey);
+    const OpenSSLPKI::PKey pkey1(pkey);
     pkey2 = pkey1;
     pkey2 = pkey1;
     std::string rend2 = pkey2.render_pem();
 
-    OpenSSLPKI::PKey pkey3(pkey_txt, "TEST2", nullptr);
-    std::string rend3 = pkey3.render_pem();
+    const OpenSSLPKI::PKey pkey3(pkey_txt, "TEST2", nullptr);
+    const std::string rend3 = pkey3.render_pem();
 
     ASSERT_EQ(rend2, rend3);
 
     OpenSSLPKI::PKey pkey4(rend3, "TEST3", nullptr);
-    OpenSSLPKI::PKey pkey5(std::move(pkey4));
+    const OpenSSLPKI::PKey pkey5(std::move(pkey4));
     pkey2 = pkey5;
     rend2 = pkey2.render_pem();
     ASSERT_EQ(rend2, rend3);
@@ -94,23 +120,22 @@ void test_pkey()
 
 void test_dh()
 {
-    OPENVPN_LOG("======= TEST DH =======");
-    std::string dh_txt = read_text(CERTDIR "/dh2048.pem");
+    const std::string dh_txt = read_text(CERTDIR "/dh2048.pem");
 
     OpenSSLPKI::DH dh, dh2;
     dh.parse_pem(dh_txt);
-    OpenSSLPKI::DH dh1(dh);
+    const OpenSSLPKI::DH dh1(dh);
     dh2 = dh1;
     dh2 = dh1;
     std::string rend2 = dh2.render_pem();
 
-    OpenSSLPKI::DH dh3(dh_txt);
-    std::string rend3 = dh3.render_pem();
+    const OpenSSLPKI::DH dh3(dh_txt);
+    const std::string rend3 = dh3.render_pem();
 
     ASSERT_EQ(rend2, rend3);
 
     OpenSSLPKI::DH dh4(rend3);
-    OpenSSLPKI::DH dh5(std::move(dh4));
+    const OpenSSLPKI::DH dh5(std::move(dh4));
     dh2 = dh5;
     rend2 = dh2.render_pem();
     ASSERT_EQ(rend2, rend3);
@@ -120,17 +145,17 @@ void test_dh()
 
 static bool verbose_output = false;
 
-TEST(PKI, crl)
+TEST(PKI, Crl)
 {
     override_logOutput(verbose_output, test_cert_crl);
 }
 
-TEST(PKI, pkey)
+TEST(PKI, Pkey)
 {
     override_logOutput(verbose_output, test_pkey);
 }
 
-TEST(PKI, dh)
+TEST(PKI, Dh)
 {
     override_logOutput(verbose_output, test_dh);
 }

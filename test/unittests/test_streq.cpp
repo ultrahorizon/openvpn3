@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 #include <iostream>
 
 #include <openvpn/common/size.hpp>
@@ -15,7 +15,7 @@ void test(const std::string &s1, const std::string &s2, const bool should_eq)
     ASSERT_NE(neq, should_eq);
 }
 
-TEST(misc, streq)
+TEST(Misc, Streq)
 {
     test("", "", true);
     test("x", "", false);

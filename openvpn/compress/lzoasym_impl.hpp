@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // This is a special OpenVPN-specific implementation of LZO decompression.
 // It is generally only used when OpenVPN is built without linkage to the
@@ -66,8 +56,7 @@
         goto assert_fail;          \
     }
 
-namespace openvpn {
-namespace lzo_asym_impl {
+namespace openvpn::lzo_asym_impl {
 // Return status values
 enum
 {
@@ -107,9 +96,7 @@ inline size_t ptr_diff(const T *a, const T *b)
 // read uint16_t from memory
 inline size_t get_u16(const unsigned char *p)
 {
-    // NOTE: assumes little-endian and unaligned 16-bit access is okay.
-    // For a slower alternative without these assumptions, try: p[0] | (p[1] << 8)
-    return get_mem<std::uint16_t>(p);
+    return p[0] | (p[1] << 8);
 }
 
 /**
@@ -154,7 +141,7 @@ inline int lzo1x_decompress_safe(const unsigned char *input,
     unsigned char *output_ptr;
     const unsigned char *match_ptr;
     const unsigned char *const input_ptr_end = input + input_length;
-    unsigned char *const output_ptr_end = output + *output_length;
+    const unsigned char *const output_ptr_end = output + *output_length;
 
     *output_length = 0;
 
@@ -353,8 +340,7 @@ assert_fail:
 input_too_large:
     return LZOASYM_E_INPUT_TOO_LARGE;
 }
-} // namespace lzo_asym_impl
-} // namespace openvpn
+} // namespace openvpn::lzo_asym_impl
 
 #undef LZOASYM_CHECK_INPUT_OVERFLOW
 #undef LZOASYM_CHECK_OUTPUT_OVERFLOW

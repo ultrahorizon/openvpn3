@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Environmental variables
 
@@ -81,12 +71,12 @@ class Environ : public std::vector<std::string>
             if (pos != std::string::npos)
             {
                 if (name == s.substr(0, pos))
-                    return i;
+                    return static_cast<int>(i); // TODO: [OVPN3-928] Evaluate the safety of casting this down
             }
             else
             {
                 if (name == s)
-                    return i;
+                    return static_cast<int>(i); // Same as above
             }
         }
         return -1;
@@ -97,8 +87,7 @@ class Environ : public std::vector<std::string>
         const int i = find_index(name);
         if (i >= 0)
             return value(i);
-        else
-            return "";
+        return "";
     }
 
     std::string value(const size_t idx) const
@@ -107,8 +96,7 @@ class Environ : public std::vector<std::string>
         const size_t pos = s.find_first_of('=');
         if (pos != std::string::npos)
             return s.substr(pos + 1);
-        else
-            return "";
+        return "";
     }
 
     void assign(const std::string &name, const std::string &value)

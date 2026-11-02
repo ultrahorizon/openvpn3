@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_SERVER_VPNSERVNETBLOCK_H
 #define OPENVPN_SERVER_VPNSERVNETBLOCK_H
@@ -39,9 +29,7 @@ class VPNServerNetblock
 
     struct Netblock
     {
-        Netblock()
-        {
-        }
+        Netblock() = default;
 
         Netblock(const IP::Route &route)
         {
@@ -52,6 +40,16 @@ class VPNServerNetblock
             net = route.addr;
             server_gw = net + 1;
             prefix_len = route.prefix_len;
+        }
+
+        // The Netblock constructor already sets the server
+        // gateway to the .1 address of the subnet, but call
+        // here to override that selection.
+        void override_server_gw(const IP::Addr &gw)
+        {
+            if (!contains(gw))
+                throw vpn_serv_netblock("override_server_gw: server gateway address is not contained by netblock");
+            server_gw = gw;
         }
 
         bool defined() const
@@ -89,9 +87,7 @@ class VPNServerNetblock
 
     struct ClientNetblock : public Netblock
     {
-        ClientNetblock()
-        {
-        }
+        ClientNetblock() = default;
 
         ClientNetblock(const IP::Route &route)
             : Netblock(route)
@@ -136,9 +132,7 @@ class VPNServerNetblock
         IP::Range range6_;
     };
 
-    VPNServerNetblock()
-    {
-    }
+    VPNServerNetblock() = default;
 
     VPNServerNetblock(const OptionList &opt,
                       const std::string &opt_name,
@@ -232,9 +226,9 @@ class VPNServerNetblock
     std::string to_string() const
     {
         std::ostringstream os;
-        os << "IPv4: " << snb4.to_string() << std::endl;
+        os << "IPv4: " << snb4.to_string() << "\n";
         if (snb6.defined())
-            os << "IPv6: " << snb6.to_string() << std::endl;
+            os << "IPv6: " << snb6.to_string() << "\n";
         for (size_t i = 0; i < thr.size(); ++i)
         {
             const PerThread &pt = thr[i];
@@ -242,7 +236,7 @@ class VPNServerNetblock
             os << " v4=" << pt.range4().to_string();
             if (pt.range6_defined())
                 os << " v6=" << pt.range6().to_string();
-            os << std::endl;
+            os << "\n";
         }
         return os.str();
     }

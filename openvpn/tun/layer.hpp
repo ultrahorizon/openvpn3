@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Class that encapsulates the definition of an OSI layer.
 
@@ -102,24 +92,22 @@ class Layer
     {
         if (str == "OSI_LAYER_3")
             return Layer(OSI_LAYER_3);
-        else if (str == "OSI_LAYER_2")
+        if (str == "OSI_LAYER_2")
             return Layer(OSI_LAYER_2);
-        else if (str == "UNDEF_LAYER")
+        if (str == "UNDEF_LAYER")
             return Layer(NONE);
-        else
-            throw Exception("Layer: unrecognized layer string");
+        throw Exception("Layer: unrecognized layer string");
     }
 
     static Layer from_value(const int value)
     {
         if (value == 3)
             return Layer(OSI_LAYER_3);
-        else if (value == 2)
+        if (value == 2)
             return Layer(OSI_LAYER_2);
-        else if (value == 0)
+        if (value == 0)
             return Layer(NONE);
-        else
-            throw Exception("Layer: unrecognized layer value");
+        throw Exception("Layer: unrecognized layer value");
     }
 
     bool operator==(const Layer &other) const

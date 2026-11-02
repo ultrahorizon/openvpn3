@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // A state machine to skip extraneous HTML in an
 // HTTP CONNECT proxy response.
@@ -36,8 +26,7 @@
 
 #include <openvpn/buffer/buffer.hpp>
 
-namespace openvpn {
-namespace HTTP {
+namespace openvpn::HTTP {
 
 class HTMLSkip
 {
@@ -51,7 +40,7 @@ class HTMLSkip
 
     HTMLSkip()
         : state(INITIAL),
-          residual(64, 0),
+          residual(64),
           bytes(0)
     {
     }
@@ -132,7 +121,7 @@ class HTMLSkip
             retain = true;
             if (c == ' ' || c == '\t' || c == '\r' || c == '\n')
                 break;
-            else if (c == 'h' || c == 'H')
+            if (c == 'h' || c == 'H')
                 state = O_HTML_H;
             else
                 state = FAIL;
@@ -238,7 +227,7 @@ class HTMLSkip
         }
         else
         {
-            BufferAllocated newbuf(residual.size() + buf.size(), 0);
+            BufferAllocated newbuf(residual.size() + buf.size());
             newbuf.write(residual.c_data(), residual.size());
             newbuf.write(buf.c_data(), buf.size());
             buf.move(newbuf);
@@ -283,7 +272,6 @@ class HTMLSkip
     unsigned long bytes;
 };
 
-} // namespace HTTP
-} // namespace openvpn
+} // namespace openvpn::HTTP
 
 #endif

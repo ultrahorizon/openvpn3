@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Drop root privileges but retain one or more Linux capabilities
 
@@ -30,6 +20,7 @@
 #include <utility>
 #include <initializer_list>
 
+#include <openvpn/common/numeric_cast.hpp>
 #include <openvpn/common/usergroup.hpp>
 
 #ifndef OPENVPN_PLATFORM_LINUX
@@ -62,7 +53,7 @@ class SetUserGroupRetainCap : public SetUserGroup
     }
 
     // call first in all threads before user/group downgrade
-    virtual void pre_thread() const override
+    void pre_thread() const override
     {
         if (!pw)
             return;
@@ -85,7 +76,7 @@ class SetUserGroupRetainCap : public SetUserGroup
     }
 
     // call once after pre_thread() called in each thread
-    virtual void activate() const override
+    void activate() const override
     {
         if (!pw)
         {
@@ -115,7 +106,7 @@ class SetUserGroupRetainCap : public SetUserGroup
     }
 
     // call in all threads after activate()
-    virtual void post_thread() const override
+    void post_thread() const override
     {
         if (!pw)
             return;
@@ -147,8 +138,8 @@ class SetUserGroupRetainCap : public SetUserGroup
 
         void set_flag(const std::vector<cap_value_t> &caps)
         {
-            if (::cap_set_flag(capabilities, CAP_PERMITTED, caps.size(), caps.data(), CAP_SET)
-                || ::cap_set_flag(capabilities, CAP_EFFECTIVE, caps.size(), caps.data(), CAP_SET))
+            if (::cap_set_flag(capabilities, CAP_PERMITTED, numeric_cast<int>(caps.size()), caps.data(), CAP_SET)
+                || ::cap_set_flag(capabilities, CAP_EFFECTIVE, numeric_cast<int>(caps.size()), caps.data(), CAP_SET))
             {
                 const int eno = errno;
                 OPENVPN_THROW(user_group_err, "SetUserGroupRetainCap::Capabilities: cap_set_flag " << title << " fail: " << strerror_str(eno));

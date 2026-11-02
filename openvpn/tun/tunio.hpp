@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Low level tun device I/O class for all platforms (Unix and Windows)
 
@@ -42,7 +32,7 @@ template <typename ReadHandler, typename PacketFrom, typename STREAM>
 class TunIO : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<TunIO> Ptr;
+    using Ptr = RCPtr<TunIO>;
 
     TunIO(ReadHandler read_handler_arg,
           const Frame::Ptr &frame_arg,
@@ -103,21 +93,7 @@ class TunIO : public RC<thread_unsafe_refcount>
                     }
                 }
 
-                // write data to tun device
-                const size_t wrote = stream->write_some(buf.const_buffer());
-                if (stats)
-                {
-                    stats->inc_stat(SessionStats::TUN_BYTES_OUT, wrote);
-                    stats->inc_stat(SessionStats::TUN_PACKETS_OUT, 1);
-                }
-                if (wrote == buf.size())
-                    return true;
-                else
-                {
-                    OPENVPN_LOG_TUN_ERROR("TUN partial write error");
-                    tun_error(Error::TUN_WRITE_ERROR, nullptr);
-                    return false;
-                }
+                return write_to_device(buf);
             }
             catch (openvpn_io::system_error &e)
             {
@@ -129,6 +105,45 @@ class TunIO : public RC<thread_unsafe_refcount>
         }
         else
             return false;
+    }
+
+    /**
+     * @brief Write a packet that must not be modified.
+     * @details Where no packet prefix is needed -- Linux and Windows, where
+     *  @c tun_prefix is false -- this hands the caller's buffer straight to
+     *  the device with no copy. Only the platforms that prepend an address
+     *  family (macOS utun) need a writable buffer, and only those pay for a
+     *  copy here.
+     * @param buf The packet to write. Not modified.
+     * @return True if the whole packet was written.
+     */
+    bool write_const(const Buffer &buf)
+    {
+        if (halt)
+            return false;
+
+        if (tun_prefix)
+        {
+            // prepend_pf_inet() writes into the buffer's headroom, so this
+            // platform genuinely needs its own copy -- allocated with the
+            // offset that write()'s prefix path requires.
+            BufferAllocated copy(buf.size() + 4, BufAllocFlags::NO_FLAGS);
+            copy.init_headroom(4);
+            copy.write(buf.c_data(), buf.size());
+            return write(copy);
+        }
+
+        try
+        {
+            return write_to_device(buf);
+        }
+        catch (openvpn_io::system_error &e)
+        {
+            OPENVPN_LOG_TUN_ERROR("TUN write exception: " << e.what());
+            const openvpn_io::error_code code(e.code());
+            tun_error(Error::TUN_WRITE_ERROR, &code);
+            return false;
+        }
     }
 
     template <class BUFSEQ>
@@ -147,12 +162,10 @@ class TunIO : public RC<thread_unsafe_refcount>
                 }
                 if (wrote == bs.size())
                     return true;
-                else
-                {
-                    OPENVPN_LOG_TUN_ERROR("TUN partial write error");
-                    tun_error(Error::TUN_WRITE_ERROR, nullptr);
-                    return false;
-                }
+
+                OPENVPN_LOG_TUN_ERROR("TUN partial write error");
+                tun_error(Error::TUN_WRITE_ERROR, nullptr);
+                return false;
             }
             catch (openvpn_io::system_error &e)
             {
@@ -201,6 +214,28 @@ class TunIO : public RC<thread_unsafe_refcount>
     }
 
   private:
+    /**
+     * @brief Hand a fully-framed packet to the device and account for it.
+     * @param buf The packet, prefix already applied if the platform needs one.
+     * @return True if the whole packet was written.
+     * @throws openvpn_io::system_error propagated from the write.
+     */
+    bool write_to_device(const Buffer &buf)
+    {
+        const size_t wrote = stream->write_some(buf.const_buffer());
+        if (stats)
+        {
+            stats->inc_stat(SessionStats::TUN_BYTES_OUT, wrote);
+            stats->inc_stat(SessionStats::TUN_PACKETS_OUT, 1);
+        }
+        if (wrote == buf.size())
+            return true;
+
+        OPENVPN_LOG_TUN_ERROR("TUN partial write error");
+        tun_error(Error::TUN_WRITE_ERROR, nullptr);
+        return false;
+    }
+
     void prepend_pf_inet(Buffer &buf, const std::uint32_t value)
     {
         const std::uint32_t net_value = htonl(value);
@@ -219,9 +254,9 @@ class TunIO : public RC<thread_unsafe_refcount>
         stream->async_read_some(frame_context.mutable_buffer(tunfrom->buf),
                                 [self = Ptr(this), tunfrom = typename PacketFrom::SPtr(tunfrom)](const openvpn_io::error_code &error, const size_t bytes_recvd) mutable
                                 {
-            OPENVPN_ASYNC_HANDLER;
-            self->handle_read(std::move(tunfrom), error, bytes_recvd);
-        });
+                                    OPENVPN_ASYNC_HANDLER;
+                                    self->handle_read(std::move(tunfrom), error, bytes_recvd);
+                                });
     }
 
     void handle_read(typename PacketFrom::SPtr pfp, const openvpn_io::error_code &error, const size_t bytes_recvd)

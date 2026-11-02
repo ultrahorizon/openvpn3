@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Low-level UDP transport object.
 
@@ -49,10 +39,9 @@
 #define OPENVPN_LOG_UDPLINK_VERBOSE(x)
 #endif
 
-namespace openvpn {
-namespace UDPTransport {
+namespace openvpn::UDPTransport {
 
-typedef openvpn_io::ip::udp::endpoint AsioEndpoint;
+using AsioEndpoint = openvpn_io::ip::udp::endpoint;
 
 enum
 {
@@ -62,21 +51,21 @@ enum
 
 struct PacketFrom
 {
-    typedef std::unique_ptr<PacketFrom> SPtr;
+    using SPtr = std::unique_ptr<PacketFrom>;
     BufferAllocated buf;
     AsioEndpoint sender_endpoint;
 };
 
 template <typename ReadHandler>
-class Link : public RC<thread_unsafe_refcount>
+class UDPLink : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<Link> Ptr;
+    using Ptr = RCPtr<UDPLink>;
 
-    Link(ReadHandler read_handler_arg,
-         openvpn_io::ip::udp::socket &socket_arg,
-         const Frame::Context &frame_context_arg,
-         const SessionStats::Ptr &stats_arg)
+    UDPLink(ReadHandler read_handler_arg,
+            openvpn_io::ip::udp::socket &socket_arg,
+            const Frame::Context &frame_context_arg,
+            const SessionStats::Ptr &stats_arg)
         : socket(socket_arg),
           halt(false),
           read_handler(read_handler_arg),
@@ -86,10 +75,11 @@ class Link : public RC<thread_unsafe_refcount>
     }
 
 #ifdef OPENVPN_GREMLIN
-    void gremlin_config(const Gremlin::Config::Ptr &config)
+    void gremlin_config(openvpn_io::io_context &io_context,
+                        const Gremlin::Config::Ptr &config)
     {
         if (config)
-            gremlin.reset(new Gremlin::SendRecvQueue(socket.get_executor().context(), config, false));
+            gremlin.reset(new Gremlin::SendRecvQueue(io_context, config, false));
     }
 #endif
 
@@ -131,7 +121,7 @@ class Link : public RC<thread_unsafe_refcount>
         frame_context.reset_align_adjust(align_adjust);
     }
 
-    ~Link()
+    ~UDPLink()
     {
         stop();
     }
@@ -147,9 +137,9 @@ class Link : public RC<thread_unsafe_refcount>
                                   udpfrom->sender_endpoint,
                                   [self = Ptr(this), udpfrom = PacketFrom::SPtr(udpfrom)](const openvpn_io::error_code &error, const size_t bytes_recvd) mutable
                                   {
-            OPENVPN_ASYNC_HANDLER;
-            self->handle_read(std::move(udpfrom), error, bytes_recvd);
-        });
+                                      OPENVPN_ASYNC_HANDLER;
+                                      self->handle_read(std::move(udpfrom), error, bytes_recvd);
+                                  });
     }
 
     void handle_read(PacketFrom::SPtr pfp, const openvpn_io::error_code &error, const size_t bytes_recvd)
@@ -196,12 +186,10 @@ class Link : public RC<thread_unsafe_refcount>
                 stats->inc_stat(SessionStats::PACKETS_OUT, 1);
                 if (wrote == buf.size())
                     return 0;
-                else
-                {
-                    OPENVPN_LOG_UDPLINK_ERROR("UDP partial send error");
-                    stats->error(Error::NETWORK_SEND_ERROR);
-                    return SEND_PARTIAL;
-                }
+
+                OPENVPN_LOG_UDPLINK_ERROR("UDP partial send error");
+                stats->error(Error::NETWORK_SEND_ERROR);
+                return SEND_PARTIAL;
             }
             catch (openvpn_io::system_error &e)
             {
@@ -220,10 +208,13 @@ class Link : public RC<thread_unsafe_refcount>
         std::unique_ptr<AsioEndpoint> ep;
         if (endpoint)
             ep.reset(new AsioEndpoint(*endpoint));
-        gremlin->send_queue([self = Ptr(this), buf = BufferAllocated(buf, 0), ep = std::move(ep)]() mutable
+        gremlin->send_queue([self = Ptr(this), buf = BufferAllocated(buf), ep = std::move(ep)]() mutable
                             {
 	    if (!self->halt)
-	      self->do_send(buf, ep.get()); });
+	      {
+	        self->gremlin->maybe_corrupt_data(buf, 0);
+	        self->do_send(buf, ep.get());
+	      } });
     }
 
     void gremlin_recv(PacketFrom::SPtr &pfp)
@@ -245,7 +236,6 @@ class Link : public RC<thread_unsafe_refcount>
     std::unique_ptr<Gremlin::SendRecvQueue> gremlin;
 #endif
 };
-} // namespace UDPTransport
-} // namespace openvpn
+} // namespace openvpn::UDPTransport
 
 #endif

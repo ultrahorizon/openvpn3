@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #include <iostream>
 #include <algorithm> // for std::min
@@ -30,6 +20,12 @@
 #define N_COMPRESS 1
 #endif
 
+/**
+   To test and compare speed of the decompression algorithms define N_EXPAND to be
+   more than 1 by either editing this define or by adding a -DN_EXPAND=1000 or
+   -DN_COMPRESS=1000 for the compression speed in the CmakeLists
+   and looks at the time the unit test take for the different combinations.
+*/
 #ifndef N_EXPAND
 #define N_EXPAND 1
 #endif
@@ -42,7 +38,7 @@
 //   must define TEST_x to define compressor/decompressor pair
 //   OPENVPN_DEBUG_COMPRESS = 0|1|2
 
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <openvpn/common/size.hpp>
 #include <openvpn/common/exception.hpp>
@@ -56,10 +52,10 @@ using namespace openvpn;
 
 Frame::Ptr frame_init(const size_t payload)
 {
-    const size_t headroom = 512;
-    const size_t tailroom = 512;
-    const size_t align_block = 16;
-    const unsigned int buffer_flags = 0;
+    constexpr size_t headroom = 512;
+    constexpr size_t tailroom = 512;
+    constexpr size_t align_block = 16;
+    constexpr BufferFlags buffer_flags = BufAllocFlags::NO_FLAGS;
 
     Frame::Ptr frame(new Frame(Frame::Context(headroom, payload, tailroom, 0, align_block, buffer_flags)));
     frame->standardize_capacity(~0);
@@ -69,14 +65,14 @@ Frame::Ptr frame_init(const size_t payload)
 class MySessionStats : public SessionStats
 {
   public:
-    typedef RCPtr<MySessionStats> Ptr;
+    using Ptr = RCPtr<MySessionStats>;
 
     MySessionStats()
     {
         std::memset(errors, 0, sizeof(errors));
     }
 
-    virtual void error(const size_t err_type, const std::string *text = NULL)
+    void error(const size_t err_type, const std::string *text = NULL) override
     {
         if (err_type < Error::N_ERRORS)
             ++errors[err_type];
@@ -86,8 +82,7 @@ class MySessionStats : public SessionStats
     {
         if (type < Error::N_ERRORS)
             return errors[type];
-        else
-            return 0;
+        return 0;
     }
 
   private:
@@ -169,7 +164,7 @@ void test_with_corpus(Compress &compressor,
         "comp-testdata/urls.10K",
         "comp-testdata/xargs.1",
     };
-    for (auto fn : filenames)
+    for (const auto &fn : filenames)
     {
         test(std::string(UNITTEST_SOURCE_DIR) + '/' + fn,
              compressor,
@@ -203,7 +198,7 @@ void runTest(comppair alg, bool verbose = false)
 
     switch (alg)
     {
-#if defined(HAVE_LZO)
+#ifdef HAVE_LZO
     case comppair::lzoasym:
         compress.reset(new CompressLZO(frame, stats, SUPPORT_SWAP, false));
         decompress.reset(new CompressLZOAsym(frame, stats, SUPPORT_SWAP, false));
@@ -215,13 +210,13 @@ void runTest(comppair alg, bool verbose = false)
         break;
 
 #endif
-#if defined(HAVE_LZ4)
+#ifdef HAVE_LZ4
     case comppair::lz4:
         compress.reset(new CompressLZ4(frame, stats, false));
         decompress = compress;
         break;
 #endif
-#if defined(HAVE_SNAPPY)
+#ifdef HAVE_SNAPPY
     case comppair::snappy:
         compress.reset(new CompressSnappy(frame, stats, false));
         decompress = compress;
@@ -240,30 +235,30 @@ void runTest(comppair alg, bool verbose = false)
                   << " blk=" << BLOCK_SIZE
                   << " bytes=" << bytes
                   << " comp-bytes=" << compress_bytes
-                  << " comp-ratio=" << (bytes ? (float)compress_bytes / bytes : 0.0)
-                  << std::endl;
+                  << " comp-ratio=" << (bytes ? static_cast<float>(compress_bytes) / static_cast<float>(bytes) : 0.0)
+                  << '\n';
 }
 
 namespace unittests {
-#if defined(HAVE_SNAPPY)
-TEST(Compression, snappy)
+#ifdef HAVE_SNAPPY
+TEST(Compression, Snappy)
 {
     runTest(comppair::snappy);
 }
 #endif
-#if defined(HAVE_LZO)
-TEST(Compression, lzo)
+#ifdef HAVE_LZO
+TEST(Compression, Lzo)
 {
     runTest(comppair::lzo);
 }
 
-TEST(Compression, lzoasym)
+TEST(Compression, Lzoasym)
 {
     runTest(comppair::lzoasym);
 }
 #endif
-#if defined(HAVE_LZ4)
-TEST(Compression, lz4)
+#ifdef HAVE_LZ4
+TEST(Compression, Lz4)
 {
     runTest(comppair::lz4);
 }

@@ -5,23 +5,16 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2023- OpenVPN Inc.
 //    Copyright (C) 2021-2022 Selva Nair <selva.nair@gmail.com>
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception OR GPL-2.0-only WITH openvpn-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
+
 
 #pragma once
+
+#include <memory>
 
 #include <openssl/evp.h>
 #include <openssl/provider.h>
@@ -41,6 +34,7 @@ class XKeyExternalPKIImpl : public std::enable_shared_from_this<XKeyExternalPKII
 
     OSSL_LIB_CTX_unique_ptr tls_libctx{nullptr, ::OSSL_LIB_CTX_free};
     ExternalPKIBase *external_pki;
+    std::string alias;
 
     static void
     xkey_logging_callback(const char *message, bool debug)
@@ -89,9 +83,8 @@ class XKeyExternalPKIImpl : public std::enable_shared_from_this<XKeyExternalPKII
             OSSL_PROVIDER_add_builtin(tls_libctx.get(), "ovpn.xkey", xkey_provider_init);
             if (!OSSL_PROVIDER_load(tls_libctx.get(), "ovpn.xkey"))
             {
-                OPENVPN_THROW(OpenSSLException, "OpenSSLContext::ExternalPKIImpl: "
-                                                    << "failed loading external key provider: "
-                                                       "Signing with external keys will not work.");
+                OPENVPN_THROW(OpenSSLException, "OpenSSLContext::ExternalPKIImpl: " << "failed loading external key provider: "
+                                                                                       "Signing with external keys will not work.");
             }
         }
 
@@ -130,9 +123,9 @@ class XKeyExternalPKIImpl : public std::enable_shared_from_this<XKeyExternalPKII
     }
 
   public:
-    [[nodiscard]] static std::shared_ptr<XKeyExternalPKIImpl> create(SSL_CTX *ssl_ctx, ::X509 *cert, ExternalPKIBase *external_pki)
+    [[nodiscard]] static std::shared_ptr<XKeyExternalPKIImpl> create(SSL_CTX *ssl_ctx, ::X509 *cert, ExternalPKIBase *external_pki, std::string alias)
     {
-        auto ret = std::shared_ptr<XKeyExternalPKIImpl>{new XKeyExternalPKIImpl{external_pki}};
+        auto ret = std::make_shared<XKeyExternalPKIImpl>(external_pki, std::move(alias));
         ret->use_external_key(ssl_ctx, cert);
         return ret;
     }
@@ -145,8 +138,8 @@ class XKeyExternalPKIImpl : public std::enable_shared_from_this<XKeyExternalPKII
         }
     }
 
-    XKeyExternalPKIImpl(ExternalPKIBase *external_pki)
-        : external_pki(external_pki)
+    XKeyExternalPKIImpl(ExternalPKIBase *external_pki, std::string alias)
+        : external_pki(external_pki), alias(std::move(alias))
     {
     }
 
@@ -160,8 +153,7 @@ class XKeyExternalPKIImpl : public std::enable_shared_from_this<XKeyExternalPKII
 
         if (!privkey)
         {
-            OPENVPN_THROW(OpenSSLException, "OpenSSLContext::ExternalPKIImpl: "
-                                                << "SSL_CTX_use_PrivateKey");
+            OPENVPN_THROW(OpenSSLException, "OpenSSLContext::ExternalPKIImpl: " << "SSL_CTX_use_PrivateKey");
         }
 
         EVP_PKEY_free(privkey);
@@ -200,7 +192,7 @@ class XKeyExternalPKIImpl : public std::enable_shared_from_this<XKeyExternalPKII
      *                      on successful return size of signature
      * @param tbs           hash or message to be signed
      * @param tbslen        len of data in dgst
-     * @param sigalg        extra signature parameters
+     * @param alg           extra signature parameters
      *
      * @return              signature length or -1 on error.
      */
@@ -265,11 +257,11 @@ class XKeyExternalPKIImpl : public std::enable_shared_from_this<XKeyExternalPKII
         }
 
         /* convert 'tbs' to base64 */
-        ConstBuffer from_buf(tbs, tbslen, true);
+        const ConstBuffer from_buf(tbs, tbslen, true);
         const std::string from_b64 = base64->encode(from_buf);
 
         std::string sig_b64;
-        external_pki->sign(from_b64, sig_b64, algstr, hashalg, saltlen);
+        external_pki->sign(alias, from_b64, sig_b64, algstr, hashalg, saltlen);
 
         Buffer sigbuf(static_cast<void *>(sig), *siglen, false);
         base64->decode(sigbuf, sig_b64);

@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_BUFFER_BUFLIST_H
 #define OPENVPN_BUFFER_BUFLIST_H
@@ -56,7 +46,7 @@ struct BufferCollection : public COLLECTION<BufferPtr>
         const size_t size = join_size();
 
         // allocate buffer
-        BufferPtr big = new BufferAllocated(size + headroom + tailroom, 0);
+        auto big = BufferAllocatedRc::Create(size + headroom + tailroom);
         big->init_headroom(headroom);
 
         // second pass -- copy data
@@ -81,7 +71,7 @@ struct BufferCollection : public COLLECTION<BufferPtr>
 
     std::string to_string() const
     {
-        BufferPtr bp = join();
+        const BufferPtr bp = join();
         return buf_to_string(*bp);
     }
 
@@ -89,7 +79,7 @@ struct BufferCollection : public COLLECTION<BufferPtr>
     {
         BufferCollection ret;
         for (auto &b : *this)
-            ret.emplace_back(new BufferAllocated(*b));
+            ret.emplace_back(BufferAllocatedRc::Create(*b));
         return ret;
     }
 
@@ -103,7 +93,7 @@ struct BufferCollection : public COLLECTION<BufferPtr>
             // special optimization if buf data fits in
             // back() unused tail capacity -- if so, append
             // buf to existing back().
-            BufferPtr &b = back();
+            const BufferPtr &b = back();
             const size_t r = b->remaining(tailroom);
             if (s < r)
             {
@@ -111,12 +101,12 @@ struct BufferCollection : public COLLECTION<BufferPtr>
                 return;
             }
         }
-        emplace_back(new BufferAllocated(std::move(buf)));
+        emplace_back(BufferAllocatedRc::Create(std::move(buf)));
     }
 };
 
-typedef BufferCollection<std::list> BufferList;
-typedef BufferCollection<std::vector> BufferVector;
+using BufferList = BufferCollection<std::list>;
+using BufferVector = BufferCollection<std::vector>;
 } // namespace openvpn
 
 #endif

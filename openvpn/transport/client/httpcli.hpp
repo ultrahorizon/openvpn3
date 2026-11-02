@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // HTTP proxy transport object.
 
@@ -55,8 +45,7 @@
 #include <openvpn/client/remotelist.hpp>
 #include <openvpn/crypto/digestapi.hpp>
 
-namespace openvpn {
-namespace HTTPProxyTransport {
+namespace openvpn::HTTPProxyTransport {
 
 enum AuthMethod
 {
@@ -72,7 +61,7 @@ class Options : public RC<thread_safe_refcount>
   public:
     struct CustomHeader : public RC<thread_unsafe_refcount>
     {
-        typedef RCPtr<CustomHeader> Ptr;
+        using Ptr = RCPtr<CustomHeader>;
 
         std::string p1;
         std::string p2;
@@ -82,7 +71,7 @@ class Options : public RC<thread_safe_refcount>
     {
     };
 
-    typedef RCPtr<Options> Ptr;
+    using Ptr = RCPtr<Options>;
 
     RemoteList::Ptr proxy_server;
     std::string username;
@@ -132,16 +121,7 @@ class Options : public RC<thread_safe_refcount>
             set_proxy_server(hp->get(1, 256), hp->get(2, 16));
 
             // get creds
-            {
-                std::vector<std::string> user_pass;
-                if (UserPass::parse(opt, "http-proxy-user-pass", 0, &user_pass))
-                {
-                    if (user_pass.size() >= 1)
-                        username = user_pass[0];
-                    if (user_pass.size() >= 2)
-                        password = user_pass[1];
-                }
-            }
+            UserPass::parse(opt, "http-proxy-user-pass", 0, username, password);
 
             const std::string auth = hp->get_optional(3, 16);
             if (!auth.empty())
@@ -211,15 +191,14 @@ class Options : public RC<thread_safe_refcount>
             }
             return true;
         }
-        else
-            return false;
+        return false;
     }
 };
 
 class ClientConfig : public TransportClientFactory
 {
   public:
-    typedef RCPtr<ClientConfig> Ptr;
+    using Ptr = RCPtr<ClientConfig>;
 
     RemoteList::Ptr remote_list;
     size_t free_list_max_size;
@@ -228,7 +207,7 @@ class ClientConfig : public TransportClientFactory
 
     Options::Ptr http_proxy_options;
 
-    RandomAPI::Ptr rng; // random data source
+    StrongRandomAPI::Ptr rng; // random data source
 
     DigestFactory::Ptr digest_factory; // needed by proxy auth methods
 
@@ -241,8 +220,8 @@ class ClientConfig : public TransportClientFactory
         return new ClientConfig;
     }
 
-    virtual TransportClient::Ptr new_transport_client_obj(openvpn_io::io_context &io_context,
-                                                          TransportClientParent *parent);
+    TransportClient::Ptr new_transport_client_obj(openvpn_io::io_context &io_context,
+                                                  TransportClientParent *parent) override;
 
   private:
     ClientConfig()
@@ -255,9 +234,9 @@ class ClientConfig : public TransportClientFactory
 
 class Client : public TransportClient, AsyncResolvableTCP
 {
-    typedef RCPtr<Client> Ptr;
+    using Ptr = RCPtr<Client>;
 
-    typedef TCPTransport::Link<openvpn_io::ip::tcp, Client *, false> LinkImpl;
+    using LinkImpl = TCPTransport::TCPLink<openvpn_io::ip::tcp, Client *, false>;
 
     friend class ClientConfig; // calls constructor
     friend LinkImpl::Base;     // calls tcp_read_handler
@@ -310,8 +289,7 @@ class Client : public TransportClient, AsyncResolvableTCP
     {
         if (impl)
             return impl->send_queue_empty();
-        else
-            return false;
+        return false;
     }
 
     bool transport_has_send_queue() override
@@ -323,12 +301,11 @@ class Client : public TransportClient, AsyncResolvableTCP
     {
     }
 
-    unsigned int transport_send_queue_size() override
+    size_t transport_send_queue_size() override
     {
         if (impl)
             return impl->send_queue_size();
-        else
-            return 0;
+        return 0;
     }
 
     void reset_align_adjust(const size_t align_adjust) override
@@ -357,10 +334,9 @@ class Client : public TransportClient, AsyncResolvableTCP
     {
         if (server_endpoint.address().is_v4())
             return Protocol(Protocol::TCPv4);
-        else if (server_endpoint.address().is_v6())
+        if (server_endpoint.address().is_v6())
             return Protocol(Protocol::TCPv6);
-        else
-            return Protocol();
+        return Protocol();
     }
 
     void stop() override
@@ -380,12 +356,12 @@ class Client : public TransportClient, AsyncResolvableTCP
         {
         }
 
-        virtual void bytes_exceeded()
+        void bytes_exceeded() override
         {
             OPENVPN_THROW_EXCEPTION("HTTP proxy response too large (> " << max_bytes << " bytes)");
         }
 
-        virtual void lines_exceeded()
+        void lines_exceeded() override
         {
             OPENVPN_THROW_EXCEPTION("HTTP proxy response too large (> " << max_lines << " lines)");
         }
@@ -416,19 +392,17 @@ class Client : public TransportClient, AsyncResolvableTCP
     {
         if (impl)
         {
-            BufferAllocated buf(cbuf, 0);
+            BufferAllocated buf(cbuf);
             return impl->send(buf);
         }
-        else
-            return false;
+        return false;
     }
 
     bool send(BufferAllocated &buf)
     {
         if (impl)
             return impl->send(buf);
-        else
-            return false;
+        return false;
     }
 
     void tcp_error_handler(const char *error) // called by LinkImpl and internally
@@ -687,16 +661,16 @@ class Client : public TransportClient, AsyncResolvableTCP
 
                 throw Exception("HTTP proxy-authenticate method not allowed / supported");
             }
-            else if (http_reply.status_code == HTTP::Status::ProxyError
-                     || http_reply.status_code == HTTP::Status::NotFound
-                     || http_reply.status_code == HTTP::Status::ServiceUnavailable)
+            if (http_reply.status_code == HTTP::Status::ProxyError
+                || http_reply.status_code == HTTP::Status::NotFound
+                || http_reply.status_code == HTTP::Status::ServiceUnavailable)
             {
                 // this is a nonfatal error, so we pass Error::UNDEF to tell the upper layer to
                 // retry the connection
                 proxy_error(Error::UNDEF, "HTTP proxy server could not connect to OpenVPN server");
                 return;
             }
-            else if (http_reply.status_code == HTTP::Status::Forbidden)
+            if (http_reply.status_code == HTTP::Status::Forbidden)
                 OPENVPN_THROW_EXCEPTION("HTTP proxy returned Forbidden status code");
             else
                 OPENVPN_THROW_EXCEPTION("HTTP proxy status code: " << http_reply.status_code);
@@ -709,8 +683,8 @@ class Client : public TransportClient, AsyncResolvableTCP
 
     void basic_auth(HTTPProxy::ProxyAuthenticate &pa)
     {
-        OPENVPN_LOG("Proxy method: Basic" << std::endl
-                                          << pa.to_string());
+        OPENVPN_LOG("Proxy method: Basic\n"
+                    << pa.to_string());
 
         std::ostringstream os;
         gen_headers(os);
@@ -726,8 +700,8 @@ class Client : public TransportClient, AsyncResolvableTCP
     {
         try
         {
-            OPENVPN_LOG("Proxy method: Digest" << std::endl
-                                               << pa.to_string());
+            OPENVPN_LOG("Proxy method: Digest\n"
+                        << pa.to_string());
 
             // constants
             const std::string http_method = "CONNECT";
@@ -742,7 +716,6 @@ class Client : public TransportClient, AsyncResolvableTCP
 
             // generate a client nonce
             unsigned char cnonce_raw[8];
-            config->rng->assert_crypto();
             config->rng->rand_bytes(cnonce_raw, sizeof(cnonce_raw));
             const std::string cnonce = render_hex(cnonce_raw, sizeof(cnonce_raw));
 
@@ -806,8 +779,8 @@ class Client : public TransportClient, AsyncResolvableTCP
 
     void ntlm_auth_phase_1(HTTPProxy::ProxyAuthenticate &pa)
     {
-        OPENVPN_LOG("Proxy method: NTLM" << std::endl
-                                         << pa.to_string());
+        OPENVPN_LOG("Proxy method: NTLM\n"
+                    << pa.to_string());
 
         const std::string phase_1_reply = HTTPProxy::NTLM::phase_1();
 
@@ -1112,7 +1085,6 @@ inline TransportClient::Ptr ClientConfig::new_transport_client_obj(openvpn_io::i
 {
     return TransportClient::Ptr(new Client(io_context, this, parent));
 }
-} // namespace HTTPProxyTransport
-} // namespace openvpn
+} // namespace openvpn::HTTPProxyTransport
 
 #endif

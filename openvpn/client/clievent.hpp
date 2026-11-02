@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // This file describes the basic set of OpenVPN client events, including the
 // normal events leading up to a connection as well as error events.
@@ -38,8 +28,7 @@
 #include <openvpn/common/jsonhelper.hpp>
 #endif
 
-namespace openvpn {
-namespace ClientEvent {
+namespace openvpn::ClientEvent {
 enum Type
 {
     // normal events including disconnected, connected, and other transitional events
@@ -56,6 +45,7 @@ enum Type
     ADD_ROUTES,
     ECHO_OPT,
     INFO,
+    CUSTOM_CONTROL,
 #ifdef HAVE_JSON
     INFO_JSON,
 #endif
@@ -75,6 +65,15 @@ enum Type
     AUTH_FAILED,
     CERT_VERIFY_FAIL,
     TLS_VERSION_MIN,
+    TLS_ALERT_PROTOCOL_VERSION,
+    TLS_ALERT_UNKNOWN_CA,
+    TLS_ALERT_MISC,
+    TLS_ALERT_HANDSHAKE_FAILURE,
+    TLS_ALERT_CERTIFICATE_EXPIRED,
+    TLS_ALERT_CERTIFICATE_REVOKED,
+    TLS_ALERT_BAD_CERTIFICATE,
+    TLS_ALERT_UNSUPPORTED_CERTIFICATE,
+    TLS_SIGALG_DISALLOWED_OR_UNSUPPORTED,
     CLIENT_HALT,
     CLIENT_SETUP,
     TUN_HALT,
@@ -91,6 +90,8 @@ enum Type
     RELAY_ERROR,
     COMPRESS_ERROR,
     NTLM_MISSING_CRYPTO,
+    SESSION_EXPIRED,
+    NEED_CREDS,
 
     N_TYPES
 };
@@ -117,6 +118,7 @@ inline const char *event_name(const Type type)
         "ADD_ROUTES",
         "ECHO",
         "INFO",
+        "CUSTOM_CONTROL",
 #ifdef HAVE_JSON
         "INFO_JSON",
 #endif
@@ -136,6 +138,15 @@ inline const char *event_name(const Type type)
         "AUTH_FAILED",
         "CERT_VERIFY_FAIL",
         "TLS_VERSION_MIN",
+        "TLS_ALERT_PROTOCOL_VERSION",
+        "TLS_ALERT_UNKNOWN_CA",
+        "TLS_ALERT_MISC",
+        "TLS_ALERT_HANDSHAKE_FAILURE",
+        "TLS_ALERT_CERTIFICATE_EXPIRED",
+        "TLS_ALERT_CERTIFICATE_REVOKED",
+        "TLS_ALERT_BAD_CERTIFICATE",
+        "TLS_ALERT_UNSUPPORTED_CERTIFICATE",
+        "TLS_SIGALG_DISALLOWED_OR_UNSUPPORTED",
         "CLIENT_HALT",
         "CLIENT_SETUP",
         "TUN_HALT",
@@ -151,13 +162,14 @@ inline const char *event_name(const Type type)
         "EPKI_INVALID_ALIAS",
         "RELAY_ERROR",
         "COMPRESS_ERROR",
-        "NTLM_MISSING_CRYPTO"};
+        "NTLM_MISSING_CRYPTO",
+        "SESSION_EXPIRED",
+        "NEED_CREDS"};
 
     static_assert(N_TYPES == array_size(names), "event names array inconsistency");
     if (type < N_TYPES)
         return names[type];
-    else
-        return "UNKNOWN_EVENT_TYPE";
+    return "UNKNOWN_EVENT_TYPE";
 }
 
 struct Connected;
@@ -166,7 +178,8 @@ struct Connected;
 class Base : public RC<thread_safe_refcount>
 {
   public:
-    typedef RCPtr<Base> Ptr;
+    using Ptr = RCPtr<Base>;
+    virtual ~Base() = default;
     Base(Type id)
         : id_(id)
     {
@@ -201,8 +214,7 @@ class Base : public RC<thread_safe_refcount>
     {
         if (id_ == CONNECTED)
             return (const Connected *)this;
-        else
-            return nullptr;
+        return nullptr;
     }
 
   private:
@@ -316,6 +328,14 @@ struct InactiveTimeout : public Base
     }
 };
 
+struct TLSMinVersion : public Base
+{
+    TLSMinVersion()
+        : Base(TLS_VERSION_MIN)
+    {
+    }
+};
+
 struct TLSVersionMinFail : public Base
 {
     TLSVersionMinFail()
@@ -324,11 +344,77 @@ struct TLSVersionMinFail : public Base
     }
 };
 
+struct TLSAlertProtocolVersion : public Base
+{
+    TLSAlertProtocolVersion()
+        : Base(TLS_ALERT_PROTOCOL_VERSION)
+    {
+    }
+};
+
+struct TLSAlertHandshakeFailure : public Base
+{
+    TLSAlertHandshakeFailure()
+        : Base(TLS_ALERT_HANDSHAKE_FAILURE)
+    {
+    }
+};
+
+struct TLSAlertCertificateExpire : public Base
+{
+    TLSAlertCertificateExpire()
+        : Base(TLS_ALERT_CERTIFICATE_EXPIRED)
+    {
+    }
+};
+
+struct TLSAlertCertificateRevoked : public Base
+{
+    TLSAlertCertificateRevoked()
+        : Base(TLS_ALERT_CERTIFICATE_REVOKED)
+    {
+    }
+};
+
+struct TLSAlertBadCertificate : public Base
+{
+    TLSAlertBadCertificate()
+        : Base(TLS_ALERT_BAD_CERTIFICATE)
+    {
+    }
+};
+
+struct TLSAlertUnsupportedCertificate : public Base
+{
+    TLSAlertUnsupportedCertificate()
+        : Base(TLS_ALERT_UNSUPPORTED_CERTIFICATE)
+    {
+    }
+};
+
+struct TLSSigAlgDisallowedOrUnsupported : public Base
+{
+    TLSSigAlgDisallowedOrUnsupported()
+        : Base(TLS_SIGALG_DISALLOWED_OR_UNSUPPORTED)
+    {
+    }
+};
+
+struct TLSAlertProtocolUnknownCA : public Base
+{
+    TLSAlertProtocolUnknownCA()
+        : Base(TLS_ALERT_UNKNOWN_CA)
+    {
+    }
+};
+
+
+
 #ifdef HAVE_JSON
 
 struct InfoJSON : public Base
 {
-    typedef RCPtr<InfoJSON> Ptr;
+    using Ptr = RCPtr<InfoJSON>;
 
     InfoJSON(std::string msg_type_arg,
              Json::Value jdata_arg)
@@ -340,7 +426,7 @@ struct InfoJSON : public Base
 
     virtual std::string render() const
     {
-        BufferAllocated buf(512, BufferAllocated::GROW);
+        BufferAllocated buf(512, BufAllocFlags::GROW);
         buf_append_string(buf, msg_type);
         buf_append_string(buf, ":");
         json::format_compact(jdata, buf);
@@ -355,7 +441,7 @@ struct InfoJSON : public Base
 
 struct UnsupportedFeature : public Base
 {
-    typedef RCPtr<UnsupportedFeature> Ptr;
+    using Ptr = RCPtr<UnsupportedFeature>;
 
     UnsupportedFeature(const std::string &name_arg, const std::string &reason_arg, bool critical_arg)
         : Base(UNSUPPORTED_FEATURE),
@@ -369,7 +455,7 @@ struct UnsupportedFeature : public Base
     std::string reason;
     bool critical;
 
-    virtual std::string render() const
+    std::string render() const override
     {
         std::ostringstream out;
         out << "name: " << name << ", reason: " << reason << ", critical: " << critical;
@@ -379,7 +465,7 @@ struct UnsupportedFeature : public Base
 
 struct Connected : public Base
 {
-    typedef RCPtr<Connected> Ptr;
+    using Ptr = RCPtr<Connected>;
 
     Connected()
         : Base(CONNECTED)
@@ -398,8 +484,9 @@ struct Connected : public Base
     std::string vpn_mtu;
     std::string client_ip;
     std::string tun_name;
+    std::uint32_t vpn_interface_index = static_cast<uint32_t>(-1);
 
-    virtual std::string render() const
+    std::string render() const override
     {
         std::ostringstream out;
         // eg. "godot@foo.bar.gov:443 (1.2.3.4) via TCPv4 on tun0/5.5.1.1"
@@ -414,7 +501,17 @@ struct Connected : public Base
             << " on " << tun_name << '/' << vpn_ip4 << '/' << vpn_ip6
             << " gw=[" << vpn_gw4 << '/' << vpn_gw6 << ']'
             << " mtu=" << vpn_mtu;
+        if (vpn_interface_index != static_cast<uint32_t>(-1))
+            out << " vpn_interface_index=" << vpn_interface_index;
         return out.str();
+    }
+};
+
+struct NeedCreds : public Base
+{
+    NeedCreds()
+        : Base(NEED_CREDS)
+    {
     }
 };
 
@@ -432,7 +529,7 @@ struct ReasonBase : public Base
     {
     }
 
-    virtual std::string render() const
+    std::string render() const override
     {
         return reason;
     }
@@ -440,10 +537,27 @@ struct ReasonBase : public Base
     std::string reason;
 };
 
+/* thrown if no other of the TLSAlert* events are matching */
+struct TLSAlertMisc : public ReasonBase
+{
+    TLSAlertMisc(std::string reason)
+        : ReasonBase(TLS_ALERT_MISC, std::move(reason))
+    {
+    }
+};
+
 struct AuthFailed : public ReasonBase
 {
     AuthFailed(std::string reason)
         : ReasonBase(AUTH_FAILED, std::move(reason))
+    {
+    }
+};
+
+struct SessionExpired : public ReasonBase
+{
+    SessionExpired(std::string reason)
+        : ReasonBase(SESSION_EXPIRED, std::move(reason))
     {
     }
 };
@@ -528,6 +642,7 @@ struct NtlmMissingCryptoError : public ReasonBase
     }
 };
 
+
 struct ProxyNeedCreds : public ReasonBase
 {
     ProxyNeedCreds(std::string reason)
@@ -608,6 +723,19 @@ struct Info : public ReasonBase
     }
 };
 
+/**
+ * Message to signal a custom app control message from the peer
+ */
+struct AppCustomControlMessage : public Base
+{
+    AppCustomControlMessage(std::string protocol, std::string message)
+        : Base(CUSTOM_CONTROL), protocol(std::move(protocol)), custommessage(std::move(message))
+    {
+    }
+    std::string protocol;
+    std::string custommessage;
+};
+
 struct AuthPending : public ReasonBase
 {
     int timeout;
@@ -656,11 +784,10 @@ struct CompressionEnabled : public ReasonBase
 class Queue : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<Queue> Ptr;
+    using Ptr = RCPtr<Queue>;
 
     virtual void add_event(Base::Ptr event) = 0;
 };
-} // namespace ClientEvent
-} // namespace openvpn
+} // namespace openvpn::ClientEvent
 
 #endif // OPENVPN_CLIENT_CLIEVENT_H

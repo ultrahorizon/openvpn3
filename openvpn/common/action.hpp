@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 
 #ifndef OPENVPN_COMMON_ACTION_H
@@ -27,6 +17,7 @@
 #include <string>
 #include <ostream>
 #include <sstream>
+#include <unordered_set>
 
 #include <openvpn/common/exception.hpp>
 #include <openvpn/common/rc.hpp>
@@ -38,7 +29,7 @@ namespace openvpn {
 
 struct Action : public RC<thread_unsafe_refcount>
 {
-    typedef RCPtr<Action> Ptr;
+    using Ptr = RCPtr<Action>;
 
     virtual void execute(std::ostream &os) = 0;
     virtual std::string to_string() const = 0;
@@ -48,15 +39,15 @@ struct Action : public RC<thread_unsafe_refcount>
         throw Exception("Action::to_json() virtual method not implemented");
     }
 #endif
-    virtual ~Action()
-    {
-    }
+    virtual ~Action() = default;
+
+    std::string mark;
 };
 
 class ActionList : public std::vector<Action::Ptr>, public DestructorBase
 {
   public:
-    typedef RCPtr<ActionList> Ptr;
+    using Ptr = RCPtr<ActionList>;
 
     ActionList()
     {
@@ -94,22 +85,38 @@ class ActionList : public std::vector<Action::Ptr>, public DestructorBase
         return false;
     }
 
-    virtual void execute(std::ostream &os)
+    /**
+     * @brief Executes a sequence of actions and returns marks of failed actions.
+     *
+     * This method iterates over a collection of actions, executing each one.
+     * If an action throws an exception, it is caught, logged to the provided
+     * output stream, and marked as failed.
+     *
+     * @param os Reference to an output stream for logging execution results.
+     * @return A set of marks for failed actions.
+     */
+    virtual std::unordered_set<std::string> execute(std::ostream &os)
     {
+        std::unordered_set<std::string> failed_actions;
+
         Iter i(size(), reverse_);
         while (i())
         {
             if (is_halt())
-                return;
+                return failed_actions;
+            auto &action = this->at(i.index());
             try
             {
-                (*this)[i.index()]->execute(os);
+                action->execute(os);
             }
             catch (const std::exception &e)
             {
-                os << "action exception: " << e.what() << std::endl;
+                os << "action exception: " << e.what() << '\n';
+                failed_actions.insert(action->mark);
             }
         }
+
+        return failed_actions;
     }
 
     void execute_log()
@@ -141,7 +148,7 @@ class ActionList : public std::vector<Action::Ptr>, public DestructorBase
         halt_ = true;
     }
 
-    virtual void destroy(std::ostream &os) override // defined by DestructorBase
+    void destroy(std::ostream &os) override // defined by DestructorBase
     {
         if (enable_destroy_)
         {
@@ -153,6 +160,28 @@ class ActionList : public std::vector<Action::Ptr>, public DestructorBase
     bool is_halt() const
     {
         return halt_;
+    }
+
+    /**
+     * @brief Removes actions with specified marks and logs the removals.
+     *
+     * Iterates through the collection and removes all actions whose marks
+     * exist in the provided set of `marks`. Logs each removal to the provided
+     * output stream.
+     *
+     * @param marks A set of marks identifying actions to be removed.
+     * @param os Reference to an output stream for logging removed actions.
+     */
+    void remove_marked(const std::unordered_set<std::string> &marks, std::ostream &os)
+    {
+        std::erase_if(*this, [&](const Action::Ptr &a) mutable
+                      {
+                                auto remove = !a->mark.empty() && marks.count(a->mark) > 0;
+                                if (remove)
+                                {
+                                    os << "Action '" << a->to_string() << "' will be removed\n";
+                                }
+                                return remove; });
     }
 
   protected:
@@ -206,7 +235,7 @@ struct ActionListReversed : public ActionList
 
 struct ActionListFactory : public RC<thread_unsafe_refcount>
 {
-    typedef RCPtr<ActionListFactory> Ptr;
+    using Ptr = RCPtr<ActionListFactory>;
 
     virtual ActionList::Ptr new_action_list() = 0;
 };

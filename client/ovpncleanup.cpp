@@ -21,7 +21,9 @@ namespace openvpn::uhvpn {
 bool OpenVPN3Cleanup::cleanup_nrpt(std::string &log)
 {
     std::ostringstream ss;
-    ::openvpn::TunWin::NRPT::ActionDelete delete_nrpt;
+    // Process id 0 removes every rule carrying our prefix, regardless of
+    // which process created it.
+    ::openvpn::TunWin::NRPT::ActionDelete delete_nrpt(0);
     delete_nrpt.execute(ss);
 
     auto flush_cmd = ::openvpn::WinCmd("ipconfig /flushdns");

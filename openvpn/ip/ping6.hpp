@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -25,6 +15,7 @@
 #include <cstring>
 #include <utility>
 
+#include <openvpn/common/clamp_typerange.hpp>
 #include <openvpn/common/size.hpp>
 #include <openvpn/common/socktypes.hpp>
 #include <openvpn/buffer/buffer.hpp>
@@ -33,14 +24,15 @@
 #include <openvpn/ip/icmp6.hpp>
 #include <openvpn/ip/csum.hpp>
 
-namespace openvpn {
-namespace Ping6 {
+using namespace openvpn::numeric_util;
+
+namespace openvpn::Ping6 {
 
 inline static const std::uint16_t *get_addr16(const struct in6_addr *addr)
 {
-#if defined(_WIN32)
+#ifdef _WIN32
     return addr->u.Word;
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__FreeBSD__)
     return addr->__u6_addr.__u6_addr16;
 #else
     return addr->s6_addr16;
@@ -90,9 +82,16 @@ inline std::uint16_t csum_ipv6_pseudo(const struct in6_addr *saddr,
 // len must be >= sizeof(ICMPv6)
 inline std::uint16_t csum_icmp(const ICMPv6 *icmp, const size_t len)
 {
+    if (len < sizeof(IPv6Header))
+        throw std::range_error("Argument 'len' too small");
+
+    if (len > static_cast<size_t>(std::numeric_limits<uint32_t>::max()))
+        throw std::range_error("Argument 'len' too large");
+
+    auto lenArg = static_cast<uint32_t>(len - sizeof(IPv6Header));
     return csum_ipv6_pseudo(&icmp->head.saddr,
                             &icmp->head.daddr,
-                            len - sizeof(IPv6Header),
+                            lenArg,
                             IPCommon::ICMPv6,
                             IPChecksum::compute((std::uint8_t *)icmp + sizeof(IPv6Header), len - sizeof(IPv6Header)));
 }
@@ -102,12 +101,12 @@ inline void generate_echo_request(Buffer &buf,
                                   const IPv6::Addr &dest,
                                   const void *extra_data,
                                   const size_t extra_data_size,
-                                  const unsigned int id,
-                                  const unsigned int seq_num,
+                                  const uint16_t id,
+                                  const uint16_t seq_num,
                                   const size_t total_size,
                                   std::string *log_info)
 {
-    const unsigned int data_size = std::max(int(extra_data_size), int(total_size) - int(sizeof(ICMPv6)));
+    const auto data_size = std::max(extra_data_size, total_size - sizeof(ICMPv6));
 
     if (log_info)
         *log_info = "PING6 " + src.to_string() + " -> " + dest.to_string() + " id=" + std::to_string(id) + " seq_num=" + std::to_string(seq_num) + " data_size=" + std::to_string(data_size);
@@ -115,12 +114,14 @@ inline void generate_echo_request(Buffer &buf,
     std::uint8_t *b = buf.write_alloc(sizeof(ICMPv6) + data_size);
     ICMPv6 *icmp = (ICMPv6 *)b;
 
+    auto payload_len = sizeof(ICMPv6) - sizeof(IPv6Header) + data_size;
+
     // IP Header
     icmp->head.version_prio = (6 << 4);
     icmp->head.flow_lbl[0] = 0;
     icmp->head.flow_lbl[1] = 0;
     icmp->head.flow_lbl[2] = 0;
-    icmp->head.payload_len = htons(sizeof(ICMPv6) - sizeof(IPv6Header) + data_size);
+    icmp->head.payload_len = htons(clamp_to_typerange<uint16_t>(payload_len));
     icmp->head.nexthdr = IPCommon::ICMPv6;
     icmp->head.hop_limit = 64;
     icmp->head.saddr = src.to_in6_addr();
@@ -167,5 +168,4 @@ inline void generate_echo_reply(Buffer &buf,
     if (log_info)
         *log_info = "ECHO6_REPLY size=" + std::to_string(buf.size()) + ' ' + IPv6::Addr::from_in6_addr(&icmp->head.saddr).to_string() + " -> " + IPv6::Addr::from_in6_addr(&icmp->head.daddr).to_string();
 }
-} // namespace Ping6
-} // namespace openvpn
+} // namespace openvpn::Ping6

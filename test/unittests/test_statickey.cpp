@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 #include <iostream>
 
 #include <openvpn/common/size.hpp>
@@ -27,17 +27,17 @@ const char key_text[] = "-----BEGIN OpenVPN Static key V1-----\n"
                         "f7591ead4710bd0e74c0b37e37c84374\n"
                         "-----END OpenVPN Static key V1-----\n";
 
-TEST(statickey, key1)
+TEST(Statickey, Key1)
 {
     // This test only tests if loading a static key works
     OpenVPNStaticKey sk;
     sk.parse(std::string(key_text));
-    std::string rend = sk.render();
+    const std::string rend = sk.render();
 }
 
-TEST(statickey, key2)
+TEST(Statickey, Key2)
 {
-    RandomAPI::Ptr rng(new SSLLib::RandomAPI(false));
+    const StrongRandomAPI::Ptr rng(new SSLLib::RandomAPI());
     const size_t key_len = 16;
     StaticKey sk1;
     sk1.init_from_rng(*rng, key_len);
@@ -51,7 +51,7 @@ TEST(statickey, key2)
 class StaticSinkBase : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<StaticSinkBase> Ptr;
+    using Ptr = RCPtr<StaticSinkBase>;
 
     virtual void init(StaticKey &&key) = 0;
     virtual std::string dump() = 0;
@@ -60,12 +60,12 @@ class StaticSinkBase : public RC<thread_unsafe_refcount>
 class StaticSink : public StaticSinkBase
 {
   public:
-    virtual void init(StaticKey &&key)
+    void init(StaticKey &&key) override
     {
         k = std::move(key);
     }
 
-    virtual std::string dump()
+    std::string dump() override
     {
         return k.render_hex();
     }
@@ -74,12 +74,12 @@ class StaticSink : public StaticSinkBase
     StaticKey k;
 };
 
-TEST(statickey, move)
+TEST(Statickey, Move)
 {
     OpenVPNStaticKey sk;
     sk.parse(std::string(key_text));
 
-    StaticSinkBase::Ptr ss(new StaticSink());
+    const StaticSinkBase::Ptr ss(new StaticSink());
     ss->init(sk.slice(OpenVPNStaticKey::CIPHER | OpenVPNStaticKey::ENCRYPT | OpenVPNStaticKey::INVERSE));
     ASSERT_EQ(
         "a2a54bd892fa20edbcfe4fe1fa8a786c5c1102a3b53e294c729b37a24842f9c9b72018b990aff058bbeeaf18f586cd5cd70475328caed6d9662937a3c970f253",

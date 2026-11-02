@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Abstract base classes for server transport objects that implement UDP, TCP,
 // HTTP Proxy, etc.
@@ -35,11 +25,21 @@
 #include <openvpn/buffer/buffer.hpp>
 #include <openvpn/addr/route.hpp>
 #include <openvpn/crypto/cryptodc.hpp>
-#include <openvpn/tun/server/tunbase.hpp>
 #include <openvpn/server/servhalt.hpp>
 #include <openvpn/server/peerstats.hpp>
 #include <openvpn/server/peeraddr.hpp>
 #include <openvpn/ssl/datalimit.hpp>
+#include <openvpn/ssl/psid.hpp>
+
+// TunClientInstance fwd decl replaces
+// #include <openvpn/tun/server/tunbase.hpp>
+namespace openvpn {
+class PsidCookie;
+namespace TunClientInstance {
+struct Recv;
+struct Send;
+} // namespace TunClientInstance
+} // namespace openvpn
 
 // used by ipma_notify()
 struct ovpn_tun_head_ipma;
@@ -49,7 +49,7 @@ namespace openvpn {
 // Base class for server transport object.
 struct TransportServer : public RC<thread_unsafe_refcount>
 {
-    typedef RCPtr<TransportServer> Ptr;
+    using Ptr = RCPtr<TransportServer>;
 
     virtual void start() = 0;
     virtual void stop() = 0;
@@ -60,7 +60,7 @@ struct TransportServer : public RC<thread_unsafe_refcount>
 // Factory for server transport object.
 struct TransportServerFactory : public RC<thread_unsafe_refcount>
 {
-    typedef RCPtr<TransportServerFactory> Ptr;
+    using Ptr = RCPtr<TransportServerFactory>;
 
     virtual TransportServer::Ptr new_server_obj(openvpn_io::io_context &io_context) = 0;
 };
@@ -71,7 +71,7 @@ namespace TransportClientInstance {
 // Each client instance uses this class to send data to the transport layer.
 struct Send : public virtual RC<thread_unsafe_refcount>
 {
-    typedef RCPtr<Send> Ptr;
+    using Ptr = RCPtr<Send>;
 
     virtual bool defined() const = 0;
     virtual void stop() = 0;
@@ -93,14 +93,15 @@ struct Send : public virtual RC<thread_unsafe_refcount>
 struct Recv : public virtual RC<thread_unsafe_refcount>
 {
     // clang-format off
-    typedef RCPtr<Recv> Ptr;
+    using Ptr = RCPtr<Recv>;
 
     virtual bool defined() const = 0;
     virtual void stop() = 0;
 
     virtual void start(const Send::Ptr &parent,
                        const PeerAddr::Ptr &addr,
-                       const int local_peer_id) = 0;
+                       const int local_peer_id,
+                       const ProtoSessionID cookie_psid = ProtoSessionID()) = 0;
 
     // Called with OpenVPN-encapsulated packets from transport layer.
     // Returns true if packet successfully validated.
@@ -138,14 +139,27 @@ struct Recv : public virtual RC<thread_unsafe_refcount>
     // push a halt or restart message to client
     virtual void push_halt_restart_msg(const HaltRestart::Type type,
                                        const std::string &reason,
-                                       const bool tell_client) = 0;
+                                       const std::string &client_reason) = 0;
     // clang-format on
+
+    /**
+     * @brief Record why this session is about to be torn down.
+     * @details Lets a caller that knows the cause -- the transport server
+     *  stopping every session on shutdown, say -- annotate the teardown it is
+     *  about to trigger, for delivery to the management layer. Not pure: a
+     *  session that does not track a cause needs no override.
+     * @param cause Why the session is ending.
+     */
+    virtual void set_disconnect_cause(const DisconnectCause cause)
+    {
+        (void)cause;
+    }
 };
 
 // Base class for factory used to create Recv objects.
 struct Factory : public RC<thread_unsafe_refcount>
 {
-    typedef RCPtr<Factory> Ptr;
+    using Ptr = RCPtr<Factory>;
 
     virtual Recv::Ptr new_client_instance() = 0;
     virtual bool validate_initial_packet(const BufferAllocated &net_buf) = 0;

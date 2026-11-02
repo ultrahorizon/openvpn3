@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 #include <iostream>
 
 #include <openvpn/common/exception.hpp>
@@ -54,7 +54,7 @@ static const char *input[] = {
     // clang-format on
 };
 
-TEST(argv, parse)
+TEST(Argv, Parse)
 {
     const OptionList opt = OptionList::parse_from_argv_static(string::from_argv(sizeof(input) / sizeof(char *),
                                                                                 const_cast<char **>(input),
@@ -67,7 +67,7 @@ static const char config[] = "listen 1.2.3.4 1000 tcp 2\n"
                              "listen ::0 8000 tcp\n"
                              "listen sock/ststrack-%s.sock unix-stream\n";
 
-TEST(argv, portoffset1)
+TEST(Argv, Portoffset1)
 {
     const OptionList opt1 = OptionList::parse_from_config_static(config, nullptr);
     const Listen::List ll1(opt1, "listen", Listen::List::Nominal, 4);
@@ -88,7 +88,7 @@ TEST(argv, portoffset1)
     EXPECT_EQ(exp2, ll2.to_string());
 }
 
-TEST(argv, portoffset2)
+TEST(Argv, Portoffset2)
 {
     const OptionList opt = OptionList::parse_from_config_static(config, nullptr);
     const Listen::List ll(opt, "listen", Listen::List::Nominal, 4);
@@ -125,13 +125,13 @@ static void extract_ifconfig(const OptionList &opt)
 {
     const Option &o = opt.get("ifconfig");
     o.exact_args(3);
-    std::string ip = IP::Addr::validate(o.ref(1), "ifconfig-ip");
-    std::string mask = IP::Addr::validate(o.ref(2), "ifconfig-net");
+    const std::string ip = IP::Addr::validate(o.ref(1), "ifconfig-ip");
+    const std::string mask = IP::Addr::validate(o.ref(2), "ifconfig-net");
     ASSERT_EQ("5.5.8.4", ip);
     ASSERT_EQ("255.255.252.0", mask);
 }
 
-TEST(argv, parsetest)
+TEST(Argv, Parsetest)
 {
     const std::string opt_csv = "explicit-exit-notify,topology subnet,route-delay 5 30,dhcp-pre-release,dhcp-renew,dhcp-release,route-metric 101,ping 5,ping-restart 40,redirect-gateway def1,redirect-gateway bypass-dhcp,redirect-gateway autolocal,route-gateway 5.5.8.1,dhcp-option DNS 172.16.0.23,register-dns,auth-token SESS_ID_wJdhHMc7tr9GwbMNEW6b+A==,comp-lzo no,ifconfig 5.5.8.4 255.255.252.0";
     OptionList opt;
@@ -160,7 +160,7 @@ TEST(argv, parsetest)
     extract_auth_token(opt);
     extract_ifconfig(opt);
     verify_topology(opt);
-    ASSERT_EQ(1066, limits.get_bytes());
+    ASSERT_EQ(1066U, limits.get_bytes());
 }
 
 static void csv_test(const std::string &str)
@@ -221,16 +221,30 @@ static void options_csv_test(const std::string &str, const std::string &elem)
 
     if (!elem.empty())
     {
-        OptionList::IndexMap::const_iterator e = olist.map().find(elem);
+        const OptionList::IndexMap::const_iterator e = olist.map().find(elem);
         ASSERT_TRUE(e != olist.map().end());
     }
 }
 
-TEST(argv, parsetest1)
+TEST(Argv, Parsetest1)
 {
     csv_test("this,is,,a,\"foo,bar\",test");
     space_test(R"(  this is a "foo \\ bar" test   of something \"rather\" grt  )", "this\nis\na\nfoo \\ bar\ntest\nof\nsomething\n\"rather\"\ngrt\n");
     space_test(R"(this is a te""st a "" b)", "this\nis\na\ntest\na\n\nb\n");
     options_csv_test("V4,dev-type tun,link-mtu 1558,tun-mtu 1500,proto UDPv4,comp-lzo,keydir 1,cipher AES-256-CBC,auth SHA1,keysize 256,tls-auth,key-method 2,tls-client",
                      "");
+}
+
+TEST(Argv, QuotesTest)
+{
+    auto str = "\"abc,def\",\'abc,def\',\"abc',def\",\'abc\"def\',\'abc\"";
+    std::vector<std::string> list = Split::by_char<std::vector<std::string>, StandardLex, Split::NullLimit>(str, ',');
+    std::stringstream s;
+    std::copy(list.begin(), list.end(), std::ostream_iterator<std::string>(s, "\n"));
+    ASSERT_EQ("\"abc,def\"\n"
+              "\'abc,def'\n"
+              "\"abc',def\"\n"
+              "\'abc\"def\'\n"
+              "\'abc\"\n",
+              s.str());
 }

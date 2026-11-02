@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -36,8 +26,7 @@
 #include <openvpn/win/winerr.hpp>
 #include <openvpn/win/modname.hpp>
 
-namespace openvpn {
-namespace Win {
+namespace openvpn::Win {
 class Service
 {
   public:
@@ -59,6 +48,8 @@ class Service
         status_handle = nullptr;
         checkpoint = 1;
     }
+
+    virtual ~Service() = default;
 
     bool is_service() const
     {
@@ -173,13 +164,10 @@ class Service
         service = this;
 
         // convert service name to wide string
-        const std::wstring wname = wstring::from_utf8(config.name);
-
-        // store it in a raw wchar_t array
-        std::unique_ptr<wchar_t[]> wname_raw = wstring::to_wchar_t(wname);
+        std::wstring wname = wstring::from_utf8(config.name);
 
         const SERVICE_TABLE_ENTRYW dispatch_table[] = {
-            {wname_raw.get(), (LPSERVICE_MAIN_FUNCTIONW)svc_main_static},
+            {wname.data(), (LPSERVICE_MAIN_FUNCTIONW)svc_main_static},
             {NULL, NULL}};
 
         // This call returns when the service has stopped.
@@ -415,5 +403,4 @@ class Service
 };
 
 Service *Service::service = nullptr; // GLOBAL
-} // namespace Win
-} // namespace openvpn
+} // namespace openvpn::Win

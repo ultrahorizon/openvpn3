@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Encapsulate the state of a static or dynamic authentication challenge.
 
@@ -32,7 +22,6 @@
 #include <openvpn/common/base64.hpp>
 #include <openvpn/common/split.hpp>
 #include <openvpn/common/rc.hpp>
-#include <openvpn/common/string.hpp>
 
 // Static Challenge response:
 //   SCRV1:<BASE64_PASSWORD>:<BASE64_RESPONSE>
@@ -51,7 +40,7 @@ namespace openvpn {
 class ChallengeResponse : public RC<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<ChallengeResponse> Ptr;
+    using Ptr = RCPtr<ChallengeResponse>;
 
     OPENVPN_SIMPLE_EXCEPTION(dynamic_challenge_parse_error);
     OPENVPN_SIMPLE_EXCEPTION(static_challenge_parse_error);
@@ -81,7 +70,7 @@ class ChallengeResponse : public RC<thread_unsafe_refcount>
 
     void init(const std::string &cookie)
     {
-        typedef std::vector<std::string> StringList;
+        using StringList = std::vector<std::string>;
         StringList sl;
         sl.reserve(5);
         Split::by_char_void<StringList, NullLex, Split::NullLimit>(sl, cookie, ':', 0, 4);
@@ -123,39 +112,35 @@ class ChallengeResponse : public RC<thread_unsafe_refcount>
 
     static bool is_dynamic(const std::string &s)
     {
-        return string::starts_with(s, "CRV1:");
+        return s.starts_with("CRV1:");
     }
 
     static bool is_static(const std::string &s)
     {
-        return string::starts_with(s, "SCRV1:");
+        return s.starts_with("SCRV1:");
     }
 
     static void validate_dynamic(const std::string &cookie)
     {
-        ChallengeResponse cr(cookie);
+        const ChallengeResponse cr(cookie);
     }
 
     std::string construct_dynamic_password(const std::string &response) const
     {
-        std::ostringstream os;
-        os << "CRV1::" << state_id << "::" << response;
-        return os.str();
+        return "CRV1::" + state_id + "::" + response;
     }
 
     static std::string construct_static_password(const std::string &password,
                                                  const std::string &response)
     {
-        std::ostringstream os;
-        os << "SCRV1:" << base64->encode(password) << ':' << base64->encode(response);
-        return os.str();
+        return "SCRV1:" + base64->encode(password) + ':' + base64->encode(response);
     }
 
     static void parse_static_cookie(const std::string &cookie,
                                     std::string &password,
                                     std::string &response)
     {
-        typedef std::vector<std::string> StringList;
+        using StringList = std::vector<std::string>;
         StringList sl;
         sl.reserve(3);
         Split::by_char_void<StringList, NullLex, Split::NullLimit>(sl, cookie, ':');

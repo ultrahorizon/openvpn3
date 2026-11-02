@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_SSL_MSSPARMS_H
 #define OPENVPN_SSL_MSSPARMS_H
@@ -47,8 +37,7 @@ struct MSSParms
                     mssfix_default = false;
                     return;
                 }
-                else
-                    throw option_error("mssfix must have a value");
+                throw option_error(ERR_INVALID_OPTION_VAL, "mssfix must have a value");
             }
 
             const bool status = parse_number_validate<decltype(mssfix)>(*val,
@@ -68,7 +57,7 @@ struct MSSParms
                     }
                 }
                 else
-                    throw option_error("mssfix: parse/range issue");
+                    throw option_error(ERR_INVALID_OPTION_VAL, "mssfix: parse/range issue");
             }
             else
             {
@@ -89,7 +78,10 @@ struct MSSCtrlParms
 {
     MSSCtrlParms(const OptionList &opt)
     {
-        mssfix_ctrl = opt.get_num<decltype(mssfix_ctrl)>("mssfix-ctrl", 1, 1250, 256, 65535);
+        // maximum size of a control channel packet on the wire, after all
+        // wrapping (tls-auth/tls-crypt/tls-crypt-v2) has been applied;
+        // the default of 1280 matches the IPv6 minimum MTU
+        mssfix_ctrl = opt.get_num<decltype(mssfix_ctrl)>("mssfix-ctrl", 1, 1280, 256, 65535);
     }
 
     unsigned int mssfix_ctrl;

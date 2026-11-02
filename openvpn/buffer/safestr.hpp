@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
@@ -30,15 +20,16 @@
 #include <openvpn/buffer/bufstr.hpp>
 
 namespace openvpn {
+/**
+    @brief A string-like type that clears the buffer contents on delete
+*/
 class SafeString
 {
     static constexpr size_t INITIAL_CAPACITY = 32;
-    static constexpr unsigned int BUF_FLAGS = BufferAllocated::DESTRUCT_ZERO | BufferAllocated::GROW;
+    static constexpr BufferFlags BUF_FLAGS{BufAllocFlags::DESTRUCT_ZERO | BufAllocFlags::GROW};
 
   public:
-    SafeString()
-    {
-    }
+    SafeString() = default;
 
     SafeString(const char *str, const size_t size)
         : data(size + 1, BUF_FLAGS)
@@ -63,8 +54,7 @@ class SafeString
     {
         if (data.defined())
             return (const char *)data.c_data();
-        else
-            return "";
+        return "";
     }
 
     // Note: unsafe because of conversion to std::string

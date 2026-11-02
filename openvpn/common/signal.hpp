@@ -4,27 +4,17 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 #ifndef OPENVPN_COMMON_SIGNAL_H
 #define OPENVPN_COMMON_SIGNAL_H
 
 #include <openvpn/common/platform.hpp>
 
-#if !defined(OPENVPN_PLATFORM_WIN)
+#ifndef OPENVPN_PLATFORM_WIN
 
 #include <signal.h>
 
@@ -37,7 +27,7 @@ class Signal
   public:
     OPENVPN_SIMPLE_EXCEPTION(signal_error);
 
-    typedef void (*handler_t)(int signum);
+    using handler_t = void (*)(int signum);
 
     enum
     {
@@ -141,8 +131,7 @@ class SignalBlocker
     {
         if (blocked_)
             return &old_mask_;
-        else
-            return nullptr;
+        return nullptr;
     }
 
     // Destructor restores the previous signal mask.
@@ -165,12 +154,12 @@ struct SignalBlockerDefault : public SignalBlocker
 {
     SignalBlockerDefault()
         : SignalBlocker( // these signals should be handled by parent thread
-            Signal::F_SIGINT
-            | Signal::F_SIGTERM
-            | Signal::F_SIGHUP
-            | Signal::F_SIGUSR1
-            | Signal::F_SIGUSR2
-            | Signal::F_SIGPIPE)
+              Signal::F_SIGINT
+              | Signal::F_SIGTERM
+              | Signal::F_SIGHUP
+              | Signal::F_SIGUSR1
+              | Signal::F_SIGUSR2
+              | Signal::F_SIGPIPE)
     {
     }
 };

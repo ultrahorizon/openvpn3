@@ -1,14 +1,34 @@
-// test weak smart pointers by having a vector of
-// reference objects (Ref/RefType) that weakly point back
-// to their parent object (Object).
+//    OpenVPN -- An application to securely tunnel IP networks
+//               over a single port, with support for SSL/TLS-based
+//               session authentication and key exchange,
+//               packet encryption, packet authentication, and
+//               packet compression.
+//
+//    Copyright (C) 2020- OpenVPN Inc.
+//
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
+//
 
-#include "test_common.h"
+/**
+   @file
+   @brief Test weak smart pointers
+
+   Test weak smart pointers by having a vector of
+   reference objects (Ref/RefType) that weakly point back
+   to their parent object (Object).
+*/
+
+#include "test_common.hpp"
 
 #include <vector>
 
 #include <openvpn/common/rc.hpp>
 
 using namespace openvpn;
+
+/// Hide these classes from Doxygen. Especially namespaces A and B lead to
+/// unwanted references.
+/// @cond UNIT_TEST_CLASSES
 
 class StaticCounter
 {
@@ -42,8 +62,8 @@ template <typename PARENT>
 class RefType : public RCWeak<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<RefType> Ptr;
-    typedef RCWeakPtr<RefType> WPtr;
+    using Ptr = RCPtr<RefType>;
+    using WPtr = RCWeakPtr<RefType>;
 
     RefType(std::string name,
             typename PARENT::Ptr parent)
@@ -62,8 +82,7 @@ class RefType : public RCWeak<thread_unsafe_refcount>
         auto p = parent();
         if (p)
             return "I am " + name() + " whose parent is " + p->name();
-        else
-            return "I am " + name() + ", an orphan";
+        return "I am " + name() + ", an orphan";
     }
 
     std::string name() const
@@ -80,9 +99,9 @@ class RefType : public RCWeak<thread_unsafe_refcount>
 class Object : public RCWeak<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<Object> Ptr;
-    typedef RCWeakPtr<Object> WPtr;
-    typedef RefType<Object> Ref;
+    using Ptr = RCPtr<Object>;
+    using WPtr = RCWeakPtr<Object>;
+    using Ref = RefType<Object>;
 
     std::string name() const
     {
@@ -106,7 +125,7 @@ class Object : public RCWeak<thread_unsafe_refcount>
     StaticCounter sc_;
 };
 
-typedef Object::Ref Ref;
+using Ref = Object::Ref;
 } // namespace A
 
 // Strategy B -- Ref declared inside Object, so Ref can make use
@@ -116,14 +135,14 @@ namespace B {
 class Object : public RCWeak<thread_unsafe_refcount>
 {
   public:
-    typedef RCPtr<Object> Ptr;
-    typedef RCWeakPtr<Object> WPtr;
+    using Ptr = RCPtr<Object>;
+    using WPtr = RCWeakPtr<Object>;
 
     class Ref : public RCWeak<thread_unsafe_refcount>
     {
       public:
-        typedef RCPtr<Ref> Ptr;
-        typedef RCWeakPtr<Ref> WPtr;
+        using Ptr = RCPtr<Ref>;
+        using WPtr = RCWeakPtr<Ref>;
 
         Ref(std::string name,
             typename Object::Ptr parent)
@@ -142,8 +161,7 @@ class Object : public RCWeak<thread_unsafe_refcount>
             auto p = parent();
             if (p)
                 return "I am " + name() + " whose parent is " + p->name();
-            else
-                return "I am " + name() + ", an orphan";
+            return "I am " + name() + ", an orphan";
         }
 
         std::string name() const
@@ -179,15 +197,15 @@ class Object : public RCWeak<thread_unsafe_refcount>
     StaticCounter sc_;
 };
 
-typedef Object::Ref Ref;
+using Ref = Object::Ref;
 } // namespace B
+
+/// @endcond
 
 template <typename Object, typename Ref>
 void test()
 {
     ASSERT_EQ(StaticCounter::count(), 0);
-
-    std::string result;
 
     // create new Ref objects that point back to their parent (Object)
     typename Object::Ptr obj(new Object);
@@ -196,7 +214,7 @@ void test()
     obj->vec.emplace_back(new Ref("Three", obj));
 
     // verify obj
-    ASSERT_EQ(obj->vec.size(), 3);
+    ASSERT_EQ(obj->vec.size(), 3U);
     ASSERT_EQ(obj->vec.at(0)->to_string(), "I am One whose parent is Regular Joe");
     ASSERT_EQ(obj->vec.at(1)->to_string(), "I am Two whose parent is Regular Joe");
     ASSERT_EQ(obj->vec.at(2)->to_string(), "I am Three whose parent is Regular Joe");
@@ -213,13 +231,13 @@ void test()
 }
 
 // strategy A
-TEST(misc, weak_a)
+TEST(Misc, WeakA)
 {
     test<A::Object, A::Ref>();
 }
 
 // strategy B
-TEST(misc, weak_b)
+TEST(Misc, WeakB)
 {
     test<B::Object, B::Ref>();
 }

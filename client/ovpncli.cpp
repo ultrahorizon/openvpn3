@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // Implementation file for OpenVPNClient API defined in ovpncli.hpp.
 
@@ -31,7 +21,7 @@
 
 // Set up export of our public interface unless
 // OPENVPN_CORE_API_VISIBILITY_HIDDEN is defined
-#if defined(__GNUC__)
+#ifdef __GNUC__
 #define OPENVPN_CLIENT_EXPORT
 #ifndef OPENVPN_CORE_API_VISIBILITY_HIDDEN
 #pragma GCC visibility push(default)
@@ -78,8 +68,6 @@
 #include <openvpn/log/logthread.hpp> // should be included early
 #endif
 
-// log SSL handshake messages
-#define OPENVPN_LOG_SSL(x) OPENVPN_LOG(x)
 
 // on Android and iOS, use TunBuilderBase abstraction
 #include <openvpn/common/platform.hpp>
@@ -97,8 +85,11 @@
 #include <openvpn/client/cliconnect.hpp>
 #include <openvpn/client/cliopthelper.hpp>
 #include <openvpn/options/merge.hpp>
+#include <openvpn/error/error.hpp>
 #include <openvpn/error/excode.hpp>
 #include <openvpn/crypto/selftest.hpp>
+#include <openvpn/client/clievent.hpp>
+#include <openvpn/log/sessionstats.hpp>
 
 // copyright
 #include <openvpn/legal/copyright.hpp>
@@ -111,7 +102,7 @@ OPENVPN_SIMPLE_EXCEPTION(app_expired);
 class MySessionStats : public SessionStats
 {
   public:
-    typedef RCPtr<MySessionStats> Ptr;
+    using Ptr = RCPtr<MySessionStats>;
 
     MySessionStats(OpenVPNClient *parent_arg)
         : parent(parent_arg)
@@ -122,35 +113,31 @@ class MySessionStats : public SessionStats
 #endif
     }
 
-    static size_t combined_n()
+    static constexpr size_t combined_n()
     {
-        return N_STATS + Error::N_ERRORS;
+        return static_cast<size_t>(N_STATS) + static_cast<size_t>(Error::N_ERRORS);
     }
 
     static std::string combined_name(const size_t index)
     {
-        if (index < N_STATS + Error::N_ERRORS)
+        if (index < combined_n())
         {
             if (index < N_STATS)
                 return stat_name(index);
-            else
-                return Error::name(index - N_STATS);
+            return Error::name(index - N_STATS);
         }
-        else
-            return "";
+        return "";
     }
 
     count_t combined_value(const size_t index) const
     {
-        if (index < N_STATS + Error::N_ERRORS)
+        if (index < combined_n())
         {
             if (index < N_STATS)
                 return get_stat(index);
-            else
-                return errors[index - N_STATS];
+            return errors[index - N_STATS];
         }
-        else
-            return 0;
+        return 0;
     }
 
     count_t stat_count(const size_t index) const
@@ -168,7 +155,7 @@ class MySessionStats : public SessionStats
         parent = nullptr;
     }
 
-    virtual void error(const size_t err, const std::string *text = nullptr)
+    void error(const size_t err, const std::string *text = nullptr) override
     {
         if (err < Error::N_ERRORS)
         {
@@ -190,29 +177,41 @@ class MySessionStats : public SessionStats
 class MyClientEvents : public ClientEvent::Queue
 {
   public:
-    typedef RCPtr<MyClientEvents> Ptr;
+    using Ptr = RCPtr<MyClientEvents>;
 
     MyClientEvents(OpenVPNClient *parent_arg)
         : parent(parent_arg)
     {
     }
 
-    virtual void add_event(ClientEvent::Base::Ptr event) override
+    void add_event(ClientEvent::Base::Ptr event) override
     {
         if (parent)
         {
-            Event ev;
-            ev.name = event->name();
-            ev.info = event->render();
-            ev.error = event->is_error();
-            ev.fatal = event->is_fatal();
+            if (event->id() == ClientEvent::CUSTOM_CONTROL)
+            {
+                AppCustomControlMessageEvent ev;
+                ClientEvent::AppCustomControlMessage *accm = static_cast<ClientEvent::AppCustomControlMessage *>(event.get());
+                ev.protocol = accm->protocol;
+                ev.payload = accm->custommessage;
+                parent->acc_event(ev);
+            }
+            else
+            {
+                Event ev;
+                ev.name = event->name();
+                ev.info = event->render();
+                ev.error = event->is_error();
+                ev.fatal = event->is_fatal();
 
-            // save connected event
-            if (event->id() == ClientEvent::CONNECTED)
-                last_connected = std::move(event);
-            else if (event->id() == ClientEvent::DISCONNECTED)
-                parent->on_disconnect();
-            parent->event(ev);
+                // save connected event
+                if (event->id() == ClientEvent::CONNECTED)
+                    last_connected = std::move(event);
+                else if (event->id() == ClientEvent::DISCONNECTED)
+                    parent->on_disconnect();
+
+                parent->event(ev);
+            }
         }
     }
 
@@ -271,7 +270,7 @@ class MySocketProtect : public SocketProtect
         rg_local = rg_local_arg;
     }
 
-    bool socket_protect(int socket, IP::Addr endpoint) override
+    bool socket_protect(openvpn_io::detail::socket_type socket, IP::Addr endpoint) override
     {
         if (parent)
         {
@@ -315,12 +314,11 @@ class MyReconnectNotify : public ReconnectNotify
         parent = nullptr;
     }
 
-    virtual bool pause_on_connection_timeout()
+    bool pause_on_connection_timeout() override
     {
         if (parent)
             return parent->pause_on_connection_timeout();
-        else
-            return false;
+        return false;
     }
 
   private:
@@ -340,7 +338,7 @@ class MyRemoteOverride : public RemoteList::RemoteOverride
         parent = nullptr;
     }
 
-    virtual RemoteList::Item::Ptr get() override
+    RemoteList::Item::Ptr get() override
     {
         if (parent)
         {
@@ -371,8 +369,7 @@ class MyRemoteOverride : public RemoteList::RemoteOverride
                 throw Exception("remote override exception: " + ro.error);
             return ri;
         }
-        else
-            return RemoteList::Item::Ptr();
+        return RemoteList::Item::Ptr();
     }
 
   private:
@@ -440,52 +437,15 @@ class ClientState
     std::unique_ptr<MyClockTick> clock_tick;
 
     // extra settings submitted by API client
-    std::string server_override;
-    std::string port_override;
-    Protocol proto_override;
-    IP::Addr::Version proto_version_override = IP::Addr::Version::UNSPEC;
-    TriStateSetting allowUnusedAddrFamilies;
-    int conn_timeout = 0;
-    bool tun_persist = false;
-    bool wintun = false;
-    bool allow_local_dns_resolvers = false;
-    bool google_dns_fallback = false;
-    bool synchronous_dns_lookup = false;
-    bool generate_tun_builder_capture_event = false;
-    bool autologin_sessions = false;
-    bool retry_on_auth_failed = false;
-    std::string private_key_password;
-    std::string external_pki_alias;
-    bool disable_client_cert = false;
-    int ssl_debug_level = 0;
-    int default_key_direction = -1;
-    std::string tls_version_min_override;
-    std::string tls_cert_profile_override;
-    std::string tls_cipher_list;
-    std::string tls_ciphersuite_list;
-    bool enable_legacy_algorithms = false;
-    bool enable_nonpreferred_dcalgs = false;
-    std::string gui_version;
-    std::string sso_methods;
-    bool allow_local_lan_access = false;
-    std::string hw_addr_override;
-    std::string platform_version;
-    ProtoContextOptions::Ptr proto_context_options;
+    ClientConfigParsed clientconf;
+
+    ProtoContextCompressionOptions::Ptr proto_context_options;
     PeerInfo::Set::Ptr extra_peer_info;
     HTTPProxyTransport::Options::Ptr http_proxy_options;
-    unsigned int clock_tick_ms = 0;
-#ifdef OPENVPN_PLATFORM_ANDROID
-    bool enable_route_emulation = true;
-#endif
+
 #ifdef OPENVPN_GREMLIN
     Gremlin::Config::Ptr gremlin_config;
 #endif
-    bool alt_proxy = false;
-    bool dco = true;
-    bool echo = false;
-    bool info = false;
-    bool dco_compatible = false;
-
     // Ensure that init is called
     InitProcess::Init init;
 
@@ -529,9 +489,7 @@ class ClientState
         remote_override.set_parent(parent);
     }
 
-    ClientState()
-    {
-    }
+    ClientState() = default;
 
     ~ClientState()
     {
@@ -636,7 +594,7 @@ OPENVPN_CLIENT_EXPORT OpenVPNClient::OpenVPNClient()
 #endif
 
     state = new Private::ClientState();
-    state->proto_context_options.reset(new ProtoContextOptions());
+    state->proto_context_options.reset(new ProtoContextCompressionOptions());
 }
 
 OPENVPN_CLIENT_EXPORT void OpenVPNClientHelper::parse_config(const Config &config, EvalConfig &eval, OptionList &options)
@@ -661,13 +619,13 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClientHelper::parse_config(const Config &confi
         }
         const ParseClientConfig cc = ParseClientConfig::parse(config.content, &kvl, options);
 
-        check_dco_compatibility(config, eval, options);
+        std::tie(eval.dcoCompatible, eval.dcoIncompatibilityReason) = ClientOptions::check_dco_compatibility(config, options);
 
 #ifdef OPENVPN_DUMP_CONFIG
-        std::cout << "---------- ARGS ----------" << std::endl;
-        std::cout << options.render(Option::RENDER_PASS_FMT | Option::RENDER_NUMBER | Option::RENDER_BRACKET) << std::endl;
-        std::cout << "---------- MAP ----------" << std::endl;
-        std::cout << options.render_map() << std::endl;
+        std::cout << "---------- ARGS ----------\n";
+        std::cout << options.render(Option::RENDER_PASS_FMT | Option::RENDER_NUMBER | Option::RENDER_BRACKET) << "\n";
+        std::cout << "---------- MAP ----------\n";
+        std::cout << options.render_map() << "\n";
 #endif
         eval.error = cc.error();
         eval.message = cc.message();
@@ -676,6 +634,7 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClientHelper::parse_config(const Config &confi
         eval.friendlyName = cc.friendlyName();
         eval.autologin = cc.autologin();
         eval.externalPki = cc.externalPki();
+        eval.vpnCa = cc.vpnCa();
         eval.staticChallenge = cc.staticChallenge();
         eval.staticChallengeEcho = cc.staticChallengeEcho();
         eval.privateKeyPasswordRequired = cc.privateKeyPasswordRequired();
@@ -689,7 +648,7 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClientHelper::parse_config(const Config &confi
             ServerEntry se;
             se.server = i->server;
             se.friendlyName = i->friendlyName;
-            eval.serverList.push_back(se);
+            eval.serverList.push_back(std::move(se));
         }
     }
     catch (const std::exception &e)
@@ -703,52 +662,14 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::parse_extras(const Config &config, Eva
 {
     try
     {
-        state->server_override = config.serverOverride;
-        state->port_override = config.portOverride;
-        state->conn_timeout = config.connTimeout;
-        state->tun_persist = config.tunPersist;
-        state->wintun = config.wintun;
-        state->allow_local_dns_resolvers = config.allowLocalDnsResolvers;
-        state->google_dns_fallback = config.googleDnsFallback;
-        state->synchronous_dns_lookup = config.synchronousDnsLookup;
-        state->generate_tun_builder_capture_event = config.generate_tun_builder_capture_event;
-        state->autologin_sessions = config.autologinSessions;
-        state->retry_on_auth_failed = config.retryOnAuthFailed;
-        state->private_key_password = config.privateKeyPassword;
-        if (!config.protoOverride.empty())
-            state->proto_override = Protocol::parse(config.protoOverride, Protocol::NO_SUFFIX);
-        if (config.protoVersionOverride == 4)
-            state->proto_version_override = IP::Addr::Version::V4;
-        else if (config.protoVersionOverride == 6)
-            state->proto_version_override = IP::Addr::Version::V6;
-        if (!config.allowUnusedAddrFamilies.empty())
-            state->allowUnusedAddrFamilies = TriStateSetting::parse(config.allowUnusedAddrFamilies);
+        state->clientconf.import_client_settings(config);
+
         if (!config.compressionMode.empty())
             state->proto_context_options->parse_compression_mode(config.compressionMode);
+
         if (eval.externalPki)
-            state->external_pki_alias = config.externalPkiAlias;
-        state->disable_client_cert = config.disableClientCert;
-        state->ssl_debug_level = config.sslDebugLevel;
-        state->default_key_direction = config.defaultKeyDirection;
-        state->tls_version_min_override = config.tlsVersionMinOverride;
-        state->tls_cert_profile_override = config.tlsCertProfileOverride;
-        state->tls_cipher_list = config.tlsCipherList;
-        state->tls_ciphersuite_list = config.tlsCiphersuitesList;
-        state->enable_legacy_algorithms = config.enableLegacyAlgorithms;
-        state->enable_nonpreferred_dcalgs = config.enableNonPreferredDCAlgorithms;
-        state->allow_local_lan_access = config.allowLocalLanAccess;
-        state->gui_version = config.guiVersion;
-        state->sso_methods = config.ssoMethods;
-        state->platform_version = config.platformVersion;
-        state->hw_addr_override = config.hwAddrOverride;
-        state->alt_proxy = config.altProxy;
-        state->dco = config.dco;
-        state->echo = config.echo;
-        state->info = config.info;
-        state->clock_tick_ms = config.clockTickMS;
-#ifdef OPENVPN_PLATFORM_ANDROID
-        state->enable_route_emulation = config.enableRouteEmulation;
-#endif
+            state->clientconf.external_pki_alias = config.externalPkiAlias;
+
         if (!config.gremlinConfig.empty())
         {
 #ifdef OPENVPN_GREMLIN
@@ -767,7 +688,6 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::parse_extras(const Config &config, Eva
             ho->allow_cleartext_auth = config.proxyAllowCleartextAuth;
             state->http_proxy_options = ho;
         }
-        state->dco_compatible = eval.dcoCompatible;
     }
     catch (const std::exception &e)
     {
@@ -860,13 +780,12 @@ OPENVPN_CLIENT_EXPORT Status OpenVPNClient::provide_creds(const ProvideCreds &cr
     {
         ClientCreds::Ptr cc = new ClientCreds();
         cc->set_username(creds.username);
+        cc->save_username_for_session_id();
         cc->set_password(creds.password);
         cc->set_http_proxy_username(creds.http_proxy_user);
         cc->set_http_proxy_password(creds.http_proxy_pass);
         cc->set_response(creds.response);
         cc->set_dynamic_challenge_cookie(creds.dynamicChallengeCookie, creds.username);
-        cc->set_replace_password_with_session_id(creds.replacePasswordWithSessionID);
-        cc->enable_password_cache(creds.cachePassword);
         state->creds = cc;
     }
     catch (const std::exception &e)
@@ -877,7 +796,7 @@ OPENVPN_CLIENT_EXPORT Status OpenVPNClient::provide_creds(const ProvideCreds &cr
     return ret;
 }
 
-OPENVPN_CLIENT_EXPORT bool OpenVPNClient::socket_protect(int socket, std::string remote, bool ipv6)
+OPENVPN_CLIENT_EXPORT bool OpenVPNClient::socket_protect(openvpn_io::detail::socket_type socket, std::string remote, bool ipv6)
 {
     return true;
 }
@@ -935,7 +854,7 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::process_epki_cert_chain(const External
 
 OPENVPN_CLIENT_EXPORT Status OpenVPNClient::connect()
 {
-#if !defined(OPENVPN_OVPNCLI_SINGLE_THREAD)
+#ifndef OPENVPN_OVPNCLI_SINGLE_THREAD
     openvpn_io::detail::signal_blocker signal_blocker; // signals should be handled by parent thread
 #endif
 #if defined(OPENVPN_LOG_LOGTHREAD_H) && !defined(OPENVPN_LOG_LOGBASE_H)
@@ -957,7 +876,7 @@ OPENVPN_CLIENT_EXPORT Status OpenVPNClient::do_connect()
     try
     {
         connect_attach();
-#if defined(OPENVPN_OVPNCLI_ASYNC_SETUP)
+#ifdef OPENVPN_OVPNCLI_ASYNC_SETUP
         openvpn_io::post(*state->io_context(), [this]()
                          { do_connect_async(); });
 #else
@@ -1010,89 +929,44 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::do_connect_async()
 OPENVPN_CLIENT_EXPORT void OpenVPNClient::connect_setup(Status &status, bool &session_started)
 {
     // set global MbedTLS debug level
-#if defined(USE_MBEDTLS) || defined(USE_MBEDTLS_APPLE_HYBRID)
-    mbedtls_debug_set_threshold(state->ssl_debug_level); // fixme -- using a global method for this seems wrong
+#ifdef USE_MBEDTLS
+    mbedtls_debug_set_threshold(state->clientconf.sslDebugLevel); // fixme -- using a global method for this seems wrong
 #endif
 
     // load options
     ClientOptions::Config cc;
+    cc.clientconf = state->clientconf;
     cc.cli_stats = state->stats;
     cc.cli_events = state->events;
-    cc.server_override = state->server_override;
-    cc.port_override = state->port_override;
-    cc.proto_override = state->proto_override;
-    cc.proto_version_override = state->proto_version_override;
-    cc.allowUnusedAddrFamilies = state->allowUnusedAddrFamilies;
-    cc.conn_timeout = state->conn_timeout;
-    cc.tun_persist = state->tun_persist;
-    cc.wintun = state->wintun;
-    cc.allow_local_dns_resolvers = state->allow_local_dns_resolvers;
-    cc.google_dns_fallback = state->google_dns_fallback;
-    cc.synchronous_dns_lookup = state->synchronous_dns_lookup;
-    cc.generate_tun_builder_capture_event = state->generate_tun_builder_capture_event;
-    cc.autologin_sessions = state->autologin_sessions;
-    cc.retry_on_auth_failed = state->retry_on_auth_failed;
+
     cc.proto_context_options = state->proto_context_options;
     cc.http_proxy_options = state->http_proxy_options;
-    cc.alt_proxy = state->alt_proxy;
-    cc.dco = state->dco;
-    cc.dco_compatible = state->dco_compatible;
-    cc.echo = state->echo;
-    cc.info = state->info;
     cc.reconnect_notify = &state->reconnect_notify;
     if (remote_override_enabled())
         cc.remote_override = &state->remote_override;
-    cc.private_key_password = state->private_key_password;
-    cc.disable_client_cert = state->disable_client_cert;
-    cc.ssl_debug_level = state->ssl_debug_level;
-    cc.default_key_direction = state->default_key_direction;
-    cc.tls_version_min_override = state->tls_version_min_override;
-    cc.tls_cert_profile_override = state->tls_cert_profile_override;
-    cc.tls_cipher_list = state->tls_cipher_list;
-    cc.tls_ciphersuite_list = state->tls_ciphersuite_list;
-    cc.enable_legacy_algorithms = state->enable_legacy_algorithms;
-    cc.enable_nonpreferred_dcalgs = state->enable_nonpreferred_dcalgs;
-    cc.gui_version = state->gui_version;
-    cc.sso_methods = state->sso_methods;
-    cc.hw_addr_override = state->hw_addr_override;
-    cc.platform_version = state->platform_version;
     cc.extra_peer_info = state->extra_peer_info;
     cc.stop = state->async_stop_local();
-    cc.allow_local_lan_access = state->allow_local_lan_access;
+    cc.socket_protect = &state->socket_protect;
 #ifdef OPENVPN_GREMLIN
     cc.gremlin_config = state->gremlin_config;
 #endif
-    cc.socket_protect = &state->socket_protect;
-#if defined(USE_TUN_BUILDER)
+#ifdef USE_TUN_BUILDER
     cc.builder = this;
 #endif
-#if defined(OPENVPN_EXTERNAL_TUN_FACTORY)
+#ifdef OPENVPN_EXTERNAL_TUN_FACTORY
     cc.extern_tun_factory = this;
 #endif
-#if defined(OPENVPN_EXTERNAL_TRANSPORT_FACTORY)
+#ifdef OPENVPN_EXTERNAL_TRANSPORT_FACTORY
     cc.extern_transport_factory = this;
 #endif
-#if defined(OPENVPN_PLATFORM_ANDROID)
-    cc.enable_route_emulation = state->enable_route_emulation;
-#endif
-    // force Session ID use and disable password cache if static challenge is enabled
-    if (state->creds
-        && !state->creds->get_replace_password_with_session_id()
-        && !state->eval.autologin
-        && !state->eval.staticChallenge.empty())
-    {
-        state->creds->set_replace_password_with_session_id(true);
-        state->creds->enable_password_cache(false);
-    }
 
     // external PKI
-#if !defined(USE_APPLE_SSL)
-    if (state->eval.externalPki && !state->disable_client_cert)
+    if (state->eval.externalPki && !state->clientconf.disableClientCert)
     {
-        if (!state->external_pki_alias.empty())
+        if (!state->clientconf.external_pki_alias.empty())
         {
             ExternalPKICertRequest req;
-            req.alias = state->external_pki_alias;
+            req.alias = state->clientconf.external_pki_alias;
             external_pki_cert_request(req);
             if (!req.error)
             {
@@ -1112,7 +986,6 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::connect_setup(Status &status, bool &se
             return;
         }
     }
-#endif
 
 #ifdef USE_OPENSSL
     if (state->options.exists("allow-name-constraints"))
@@ -1134,9 +1007,9 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::connect_setup(Status &status, bool &se
     state->session.reset(new ClientConnect(*state->io_context(), client_options));
 
     // convenience clock tick
-    if (state->clock_tick_ms)
+    if (state->clientconf.clockTickMS)
     {
-        state->clock_tick.reset(new MyClockTick(*state->io_context(), this, state->clock_tick_ms));
+        state->clock_tick.reset(new MyClockTick(*state->io_context(), this, state->clientconf.clockTickMS));
         state->clock_tick->schedule();
     }
 
@@ -1156,7 +1029,7 @@ OPENVPN_CLIENT_EXPORT Status OpenVPNClient::status_from_exception(const std::exc
 {
     Status ret;
     ret.error = true;
-    ret.message = Unicode::utf8_printable<std::string>(e.what(), 256);
+    ret.message = Unicode::utf8_printable<std::string>(e.what(), 2048 | Unicode::UTF8_PASS_FMT);
 
     // if exception is an ExceptionCode, translate the code
     // to return status string
@@ -1222,7 +1095,7 @@ OPENVPN_CLIENT_EXPORT Stop *OpenVPNClient::get_async_stop()
     return nullptr;
 }
 
-OPENVPN_CLIENT_EXPORT void OpenVPNClient::external_pki_error(const ExternalPKIRequestBase &req, const size_t err_type)
+OPENVPN_CLIENT_EXPORT void OpenVPNClient::external_pki_error(const ExternalPKIRequestBase &req, const Error::Type err_type)
 {
     if (req.error)
     {
@@ -1241,15 +1114,16 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::external_pki_error(const ExternalPKIRe
     }
 }
 
-OPENVPN_CLIENT_EXPORT bool OpenVPNClient::sign(const std::string &data,
+OPENVPN_CLIENT_EXPORT bool OpenVPNClient::sign(const std::string &alias,
+                                               const std::string &data,
                                                std::string &sig,
                                                const std::string &algorithm,
                                                const std::string &hashalg,
                                                const std::string &saltlen)
 {
     ExternalPKISignRequest req;
+    req.alias = alias;
     req.data = data;
-    req.alias = state->external_pki_alias;
     req.algorithm = algorithm;
     req.hashalg = hashalg;
     req.saltlen = saltlen;
@@ -1259,11 +1133,9 @@ OPENVPN_CLIENT_EXPORT bool OpenVPNClient::sign(const std::string &data,
         sig = req.sig;
         return true;
     }
-    else
-    {
-        external_pki_error(req, Error::EPKI_SIGN_ERROR);
-        return false;
-    }
+
+    external_pki_error(req, Error::EPKI_SIGN_ERROR);
+    return false;
 }
 
 OPENVPN_CLIENT_EXPORT bool OpenVPNClient::remote_override_enabled()
@@ -1303,7 +1175,7 @@ OPENVPN_CLIENT_EXPORT long long OpenVPNClient::stats_value(int index) const
 OPENVPN_CLIENT_EXPORT std::vector<long long> OpenVPNClient::stats_bundle() const
 {
     std::vector<long long> sv;
-    const size_t n = MySessionStats::combined_n();
+    constexpr size_t n = MySessionStats::combined_n();
     sv.reserve(n);
     if (state->is_foreign_thread_access())
     {
@@ -1438,6 +1310,80 @@ OPENVPN_CLIENT_EXPORT void OpenVPNClient::post_cc_msg(const std::string &msg)
     }
 }
 
+OPENVPN_CLIENT_EXPORT void OpenVPNClient::send_app_control_channel_msg(const std::string &protocol, const std::string &msg)
+{
+    if (state->is_foreign_thread_access())
+    {
+        ClientConnect *session = state->session.get();
+        if (session)
+            session->thread_safe_send_app_control_channel_msg(protocol, msg);
+    }
+}
+
+static SSLLib::SSLAPI::Config::Ptr setup_certcheck_ssl_config(const std::string &client_cert,
+                                                              const std::string &extra_certs,
+                                                              const std::optional<const std::string> &ca)
+{
+    SSLLib::SSLAPI::Config::Ptr config = new SSLLib::SSLAPI::Config;
+    config->set_frame(new Frame(Frame::Context(128, 4096, 4096 - 128, 0, 16, BufAllocFlags::NO_FLAGS)));
+    config->set_mode(Mode(Mode::CLIENT));
+    config->load_cert(client_cert, extra_certs);
+    unsigned int flags = SSLConst::LOG_VERIFY_STATUS;
+
+    if (ca)
+        config->load_ca(*ca, false);
+    else
+        flags |= SSLConfigAPI::LF_ALLOW_CLIENT_CERT_NOT_REQUIRED;
+
+    config->set_flags(flags);
+
+    return config;
+}
+
+OPENVPN_CLIENT_EXPORT void OpenVPNClient::start_cert_check(const std::string &client_cert,
+                                                           const std::string &clientkey,
+                                                           const std::optional<const std::string> &ca)
+{
+    if (state->is_foreign_thread_access())
+    {
+        ClientConnect *session = state->session.get();
+        if (session)
+        {
+            SSLLib::SSLAPI::Config::Ptr config = setup_certcheck_ssl_config(client_cert, "", ca);
+            config->load_private_key(clientkey);
+
+            session->start_acc_certcheck(config);
+        }
+    }
+}
+
+OPENVPN_CLIENT_EXPORT void OpenVPNClient::start_cert_check_epki(const std::string &alias, const std::optional<const std::string> &ca)
+{
+    if (state->is_foreign_thread_access())
+    {
+        ClientConnect *session = state->session.get();
+        if (session)
+        {
+            ClientAPI::ExternalPKICertRequest req;
+            req.alias = alias;
+            external_pki_cert_request(req);
+
+            if (req.error)
+            {
+                external_pki_error(req, Error::EPKI_CERT_ERROR);
+                return;
+            }
+
+            SSLLib::SSLAPI::Config::Ptr config = setup_certcheck_ssl_config(req.cert, req.supportingChain, ca);
+
+            config->set_external_pki_callback(this, alias);
+
+
+            session->start_acc_certcheck(config);
+        }
+    }
+}
+
 OPENVPN_CLIENT_EXPORT void OpenVPNClient::clock_tick()
 {
 }
@@ -1475,50 +1421,6 @@ OPENVPN_CLIENT_EXPORT std::string OpenVPNClientHelper::platform()
     ret += " built on " __DATE__ " " __TIME__;
 #endif
     return ret;
-}
-
-OPENVPN_CLIENT_EXPORT void OpenVPNClientHelper::check_dco_compatibility(const Config &config, EvalConfig &eval, OptionList &opt)
-{
-#if defined(ENABLE_KOVPN)
-    // only care about dco/dco-win
-    eval.dcoCompatible = true;
-    return;
-#endif
-
-    std::vector<std::string> reasons;
-
-    for (auto &optname : dco_incompatible_opts)
-    {
-        if (opt.exists(optname))
-        {
-            reasons.push_back("option " + optname + " is not compatible with dco");
-        }
-    }
-
-    if (config.enableLegacyAlgorithms)
-    {
-        reasons.push_back("legacy algorithms are not compatible with dco");
-    }
-
-    if (config.enableNonPreferredDCAlgorithms)
-    {
-        reasons.push_back("non-preferred data channel algorithms are not compatible with dco");
-    }
-
-    if (!config.proxyHost.empty())
-    {
-        reasons.push_back("proxyHost config setting is not compatible with dco");
-    }
-
-    if (reasons.empty())
-    {
-        eval.dcoCompatible = true;
-    }
-    else
-    {
-        eval.dcoCompatible = false;
-        eval.dcoIncompatibilityReason = string::join(reasons, "\n");
-    }
 }
 
 OPENVPN_CLIENT_EXPORT OpenVPNClient::~OpenVPNClient()

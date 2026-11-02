@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // A queue of buffers for handling streamed data such as data received
 // from or to be sent to a TCP socket
@@ -39,9 +29,8 @@ class MemQStream : public MemQBase
   public:
     OPENVPN_SIMPLE_EXCEPTION(frame_uninitialized);
 
-    MemQStream()
-    {
-    }
+    MemQStream() = default;
+
     explicit MemQStream(const Frame::Ptr &frame)
         : frame_(frame)
     {
@@ -67,7 +56,7 @@ class MemQStream : public MemQBase
                 // Any residual space remaining in most recently pushed buffer?
                 if (!q.empty())
                 {
-                    BufferPtr &qb = q.back();
+                    const BufferPtr &qb = q.back();
                     const size_t write_size = std::min(b.size(), fc.remaining_payload(*qb));
                     const unsigned char *from = b.read_alloc(write_size);
                     qb->write(from, write_size);
@@ -75,9 +64,9 @@ class MemQStream : public MemQBase
                 }
 
                 // Start a new buffer
-                while (b.size())
+                while (!b.empty())
                 {
-                    BufferPtr newbuf(new BufferAllocated);
+                    auto newbuf = BufferAllocatedRc::Create();
                     fc.prepare(*newbuf);
                     const size_t write_size = std::min(b.size(), fc.payload());
                     const unsigned char *from = b.read_alloc(write_size);
@@ -99,7 +88,7 @@ class MemQStream : public MemQBase
             const size_t remaining = b.remaining();
             if (!remaining)
                 break;
-            BufferPtr &qf = q.front();
+            const BufferPtr &qf = q.front();
             const size_t read_size = std::min(remaining, qf->size());
             unsigned char *to = b.write_alloc(read_size);
             qf->read(to, read_size);

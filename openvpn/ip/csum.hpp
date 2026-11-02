@@ -4,20 +4,10 @@
 //               packet encryption, packet authentication, and
 //               packet compression.
 //
-//    Copyright (C) 2012-2022 OpenVPN Inc.
+//    Copyright (C) 2012- OpenVPN Inc.
 //
-//    This program is free software: you can redistribute it and/or modify
-//    it under the terms of the GNU Affero General Public License Version 3
-//    as published by the Free Software Foundation.
+//    SPDX-License-Identifier: MPL-2.0 OR AGPL-3.0-only WITH openvpn3-openssl-exception
 //
-//    This program is distributed in the hope that it will be useful,
-//    but WITHOUT ANY WARRANTY; without even the implied warranty of
-//    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-//    GNU Affero General Public License for more details.
-//
-//    You should have received a copy of the GNU Affero General Public License
-//    along with this program in the COPYING file.
-//    If not, see <http://www.gnu.org/licenses/>.
 
 // IP checksum based on Linux kernel implementation
 
@@ -29,19 +19,18 @@
 #include <openvpn/common/socktypes.hpp>
 #include <openvpn/common/size.hpp>
 
-namespace openvpn {
-namespace IPChecksum {
+namespace openvpn::IPChecksum {
 
 inline std::uint16_t fold(std::uint32_t sum)
 {
     sum = (sum >> 16) + (sum & 0xffff);
     sum += (sum >> 16);
-    return sum;
+    return static_cast<uint16_t>(sum & 0x0000FFFF);
 }
 
 inline std::uint16_t cfold(const std::uint32_t sum)
 {
-    return ~fold(sum);
+    return static_cast<uint16_t>(~fold(sum));
 }
 
 inline std::uint32_t unfold(const std::uint16_t sum)
@@ -170,5 +159,4 @@ inline std::uint16_t checksum(const void *data, const size_t size)
 {
     return cfold(compute(data, size));
 }
-} // namespace IPChecksum
-} // namespace openvpn
+} // namespace openvpn::IPChecksum

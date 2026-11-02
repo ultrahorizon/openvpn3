@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <openvpn/common/tempfile.hpp>
 
@@ -13,7 +13,7 @@ std::string content1 = "It was a bright cold day in April, and the clocks\n"
 
 std::string content2 = "To be or not to be, that is the question?\n";
 
-TEST(misc, tempfile)
+TEST(Misc, Tempfile)
 {
     TempFile tf(getTempDirPath("tempfile-XXXXXX"), true);
 
@@ -27,4 +27,39 @@ TEST(misc, tempfile)
     tf.reset();
     const std::string s2 = tf.read();
     ASSERT_EQ(s2, content2);
+}
+
+TEST(Misc, TempfileName)
+{
+    const TempFile tf(getTempDirPath("tempfile-XXXXXX"), true);
+    auto fn = tf.filename();
+    ASSERT_NE(std::string::npos, fn.find("tempfile-"));
+    ASSERT_EQ(std::string::npos, fn.find("XXXXXX"));
+}
+
+TEST(Misc, TempfileName6Xs)
+{
+    const TempFile tf(getTempDirPath("tempXXXXXXfile"), true);
+    auto fn = tf.filename();
+    ASSERT_NE(std::string::npos, fn.find("temp"));
+    ASSERT_NE(std::string::npos, fn.find("file"));
+    ASSERT_EQ(std::string::npos, fn.find("XXXXXX"));
+}
+
+TEST(Misc, TempfileName7Xs)
+{
+    const TempFile tf(getTempDirPath("tempXXXXXXXfile"), true);
+    auto fn = tf.filename();
+    ASSERT_NE(std::string::npos, fn.find("temp"));
+    ASSERT_NE(std::string::npos, fn.find("file"));
+    ASSERT_EQ(std::string::npos, fn.find("XXXXXX"));
+}
+
+TEST(Misc, TempfileName6X6X)
+{
+    const TempFile tf(getTempDirPath("tempXXXXXXfile-XXXXXX"), true);
+    auto fn = tf.filename();
+    ASSERT_NE(std::string::npos, fn.find("temp"));
+    ASSERT_NE(std::string::npos, fn.find("file"));
+    ASSERT_EQ(fn.rfind("XXXXXX"), fn.find("XXXXXX"));
 }

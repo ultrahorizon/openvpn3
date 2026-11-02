@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "test_common.hpp"
 
 #include <iostream>
 #include <string>
@@ -11,9 +11,9 @@ template <typename BASE>
 class TestType : public BASE
 {
   public:
-    typedef RCPtr<TestType> Ptr;
-    typedef RCWeakPtr<TestType> WPtr;
-    typedef BASE Base;
+    using Ptr = RCPtr<TestType>;
+    using WPtr = RCWeakPtr<TestType>;
+    using Base = BASE;
 
     TestType(const std::string &name_arg)
         : name(name_arg)
@@ -38,8 +38,8 @@ template <typename Base>
 class TestParentType : public TestType<Base>
 {
   public:
-    typedef RCPtr<TestParentType> Ptr;
-    typedef RCWeakPtr<TestParentType> WPtr;
+    using Ptr = RCPtr<TestParentType>;
+    using WPtr = RCWeakPtr<TestParentType>;
 
     TestParentType(const std::string &name_arg)
         : TestType<Base>(name_arg)
@@ -80,12 +80,12 @@ template <typename Test>
 void test()
 {
     testLog->startCollecting();
-    typedef TestParentType<typename Test::Base> TestParent;
+    using TestParent = TestParentType<typename Test::Base>;
 
     {
         OPENVPN_LOG("*** TEST1");
-        typename Test::Ptr t1 = new Test("Test1");
-        typename Test::Ptr t2(t1);
+        const typename Test::Ptr t1 = new Test("Test1");
+        const typename Test::Ptr t2(t1);
         typename Test::Ptr t3(t2);
     }
     {
@@ -95,9 +95,9 @@ void test()
         typename Test::WPtr w2z;
 
         {
-            typename Test::Ptr t1 = new Test("Test2");
+            const typename Test::Ptr t1 = new Test("Test2");
             typename Test::WPtr w1 = t1;
-            RCWeakPtr<typename Test::WPtr::element_type> w2 = t1.get();
+            const RCWeakPtr<typename Test::WPtr::element_type> w2 = t1.get();
             w1z.reset(t1);
             w2z.reset(t1.get());
 
@@ -128,16 +128,16 @@ void test()
             OPENVPN_LOG("w1z=" << w1z.use_count() << " w2z=" << w2z.use_count());
         }
 
-        typename Test::Ptr x = w1z.lock();
-        typename Test::Ptr y = w2z.lock();
+        const typename Test::Ptr x = w1z.lock();
+        const typename Test::Ptr y = w2z.lock();
         ASSERT_FALSE(x || y || !w1z.expired() || !w2z.expired()) << "BUG ALERT #3";
         w1z = w2z;
     }
     {
         OPENVPN_LOG("*** TEST3");
-        typename Test::Ptr t1 = new Test("Test3");
-        typename Test::Ptr t2(t1);
-        typename Test::Ptr t3(t2);
+        const typename Test::Ptr t1 = new Test("Test3");
+        const typename Test::Ptr t2(t1);
+        const typename Test::Ptr t3(t2);
 
         t1->rc_release_notify([obj = t1.get()]()
                               {
@@ -154,20 +154,20 @@ void test()
     }
     {
         OPENVPN_LOG("*** TEST4");
-        typename TestParent::Ptr t1 = new TestParent("Test4");
-        typename Test::Ptr t2(t1);
-        typename TestParent::Ptr t3 = t2.template dynamic_pointer_cast<TestParent>();
+        const typename TestParent::Ptr t1 = new TestParent("Test4");
+        const typename Test::Ptr t2(t1);
+        const typename TestParent::Ptr t3 = t2.template dynamic_pointer_cast<TestParent>();
         OPENVPN_LOG(t3->parent_name);
     }
     ASSERT_EQ(expected_output, testLog->stopCollecting());
 }
 
-TEST(misc, RCthreadUnsafe)
+TEST(Misc, RCthreadUnsafe)
 {
     test<TestType<RCWeak<thread_unsafe_refcount>>>();
 }
 
-TEST(misc, RCthreadSafe)
+TEST(Misc, RCthreadSafe)
 {
     test<TestType<RCWeak<thread_safe_refcount>>>();
 }
