@@ -59,9 +59,13 @@ class Setup : public SetupBase
   public:
     typedef RCPtr<Setup> Ptr;
 
-    Setup(openvpn_io::io_context &io_context_arg, const Type tun_type, bool allow_local_dns_resolvers_arg)
+    Setup(openvpn_io::io_context &io_context_arg,
+          const Type tun_type,
+          bool allow_local_dns_resolvers_arg,
+          const std::string &adapter_guid = "")
         : delete_route_timer(io_context_arg),
           tun_type_(tun_type),
+          adapter_guid_(adapter_guid),
           allow_local_dns_resolvers(allow_local_dns_resolvers_arg)
     {
     }
@@ -98,7 +102,9 @@ class Setup : public SetupBase
             return INVALID_HANDLE_VALUE;
 
         // enumerate available TAP adapters
-        Util::TapNameGuidPairList guids(tun_type_);
+        Util::TapNameGuidPairList guids(tun_type_, adapter_guid_);
+        if (!adapter_guid_.empty())
+            os << "Requested adapter: " << adapter_guid_ << "\n";
         os << "TAP ADAPTERS:\n"
            << guids.to_string() << "\n";
 
@@ -969,6 +975,7 @@ class Setup : public SetupBase
     AsioTimer delete_route_timer;
 
     const Type tun_type_;
+    const std::string adapter_guid_;
     Util::TapNameGuidPair tap_;
     bool allow_local_dns_resolvers = false;
     DWORD process_id_ = 0;

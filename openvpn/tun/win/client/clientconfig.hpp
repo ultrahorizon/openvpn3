@@ -50,6 +50,7 @@ class ClientConfig : public TunClientFactory
     int n_parallel = 8; // number of parallel async reads on tun socket
     TunWin::Type tun_type = TunWin::TapWindows6;
     bool allow_local_dns_resolvers = false;
+    std::string adapter_guid; // empty: first marked adapter
 
     Frame::Ptr frame;
     SessionStats::Ptr stats;
@@ -65,7 +66,7 @@ class ClientConfig : public TunClientFactory
         if (tun_setup_factory)
             return tun_setup_factory->new_setup_obj(io_context, tun_type, allow_local_dns_resolvers);
         else
-            return new TunWin::Setup(io_context, tun_type, allow_local_dns_resolvers);
+            return new TunWin::Setup(io_context, tun_type, allow_local_dns_resolvers, adapter_guid);
     }
 
     static Ptr new_obj()

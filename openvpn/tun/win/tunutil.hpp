@@ -94,8 +94,9 @@ const char OVPNDCO_DEV_INTERFACE_REF_STRING[] = "\\ovpn-dco";
 using TapGuidLuid = std::pair<std::string, DWORD>;
 
 // Return a list of TAP device GUIDs installed on the system,
-// filtered by TAP_WIN_COMPONENT_ID.
-inline std::vector<TapGuidLuid> tap_guids(const Type tun_type)
+// filtered by TAP_WIN_COMPONENT_ID, the UH VPN adapter marker and,
+// if not empty, the adapter's NetCfgInstanceId.
+inline std::vector<TapGuidLuid> tap_guids(const Type tun_type, const std::string &adapter_guid = "")
 {
     LONG status;
     DWORD len;
@@ -214,6 +215,9 @@ inline std::vector<TapGuidLuid> tap_guids(const Type tun_type)
             tgl.first = std::string(strbuf);
         }
 
+        if (!adapter_guid.empty() && string::strcasecmp(tgl.first, adapter_guid))
+            continue;
+
         DWORD luid;
         len = sizeof(luid);
         status = ::RegQueryValueExA(unit_key(),
@@ -271,11 +275,11 @@ struct TapNameGuidPair
 
 struct TapNameGuidPairList : public std::vector<TapNameGuidPair>
 {
-    TapNameGuidPairList(const Type tun_type)
+    TapNameGuidPairList(const Type tun_type, const std::string &adapter_guid = "")
     {
         // first get the TAP guids
         {
-            std::vector<TapGuidLuid> guids = tap_guids(tun_type);
+            std::vector<TapGuidLuid> guids = tap_guids(tun_type, adapter_guid);
             for (auto i = guids.begin(); i != guids.end(); i++)
             {
                 TapNameGuidPair pair;

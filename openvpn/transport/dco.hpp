@@ -61,10 +61,11 @@ struct DCO : public virtual RC<thread_unsafe_refcount>
             if (setup_factory)
                 return setup_factory->new_setup_obj(io_context, TunWin::OvpnDco, allow_local_dns_resolvers);
             else
-                return new TunWin::Setup(io_context, TunWin::OvpnDco, allow_local_dns_resolvers);
+                return new TunWin::Setup(io_context, TunWin::OvpnDco, allow_local_dns_resolvers, adapter_guid);
         }
 
         TunWin::DcoTunPersist::Ptr tun_persist;
+        std::string adapter_guid; // empty: first marked adapter
 #endif
 
         TunProp::Config tun_prop;

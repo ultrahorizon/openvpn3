@@ -385,6 +385,7 @@ class ClientOptions : public RC<thread_unsafe_refcount>
 #if defined(OPENVPN_PLATFORM_WIN)
             if (config.clientconf.tunPersist)
                 tunconf.tun_persist.reset(new TunWin::DcoTunPersist(true, TunWrapObjRetain::NO_RETAIN_NO_REPLACE, nullptr));
+            tunconf.adapter_guid = config.clientconf.windowsAdapterGuid;
 #endif
             tun_factory = dco->new_tun_factory(tunconf, opt);
         }
@@ -511,6 +512,7 @@ class ClientOptions : public RC<thread_unsafe_refcount>
                 tunconf->stop = config.stop;
                 tunconf->tun_type = config.clientconf.wintun ? TunWin::Wintun : TunWin::TapWindows6;
                 tunconf->allow_local_dns_resolvers = allow;
+                tunconf->adapter_guid = config.clientconf.windowsAdapterGuid;
                 if (config.clientconf.tunPersist)
                 {
                     tunconf->tun_persist.reset(new TunWin::TunPersist(true, TunWrapObjRetain::NO_RETAIN, nullptr));
