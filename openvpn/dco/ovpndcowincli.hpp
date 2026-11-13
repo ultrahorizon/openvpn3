@@ -536,11 +536,42 @@ class OvpnDcoWinClient : public Client,
             throw ErrorCode(Error::TUN_SETUP_FAILED, false, "no device handle");
 
         HANDLE th(handle->native_handle());
-        LPOVERLAPPED ov_ = (ov ? ov->get() : NULL);
+        if (!ov)
+        {
+            // A synchronous call on the device handle, which is opened overlapped (asio). Without
+            // an OVERLAPPED, DeviceIoControl waits on the file object, which any other I/O on the
+            // handle signals, so two such calls at once (GET_STATS from a stats poll on another
+            // thread, SET_PEER or NEW_KEY on the session thread) can return early or block for
+            // ever; and a NULL lpBytesReturned is not allowed without an OVERLAPPED. So: our own
+            // OVERLAPPED and event, the event's low bit set so that the completion is not queued
+            // to asio's completion port, and a wait for this operation only.
+            HANDLE ev = ::CreateEventW(NULL, TRUE, FALSE, NULL);
+            if (ev == NULL)
+                throw ErrorCode(Error::TUN_SETUP_FAILED, true, "DeviceIoControl: CreateEvent failed");
+            OVERLAPPED o{};
+            o.hEvent = reinterpret_cast<HANDLE>(reinterpret_cast<ULONG_PTR>(ev) | 1);
+            DWORD bytes = 0;
+            BOOL ok = DeviceIoControl(th, code, in_buf, in_buf_size, out_buf, out_buf_size, &bytes, &o);
+            DWORD error_code = ok ? ERROR_SUCCESS : GetLastError();
+            if (!ok && error_code == ERROR_IO_PENDING)
+            {
+                ok = GetOverlappedResult(th, &o, &bytes, TRUE);
+                error_code = ok ? ERROR_SUCCESS : GetLastError();
+            }
+            ::CloseHandle(ev);
+            if (!ok)
+            {
+                std::ostringstream os;
+                os << "DeviceIoControl(" << code_str.at(code) << ")"
+                   << " failed with code " << error_code;
+                throw ErrorCode(Error::TUN_SETUP_FAILED, true, os.str());
+            }
+            return ERROR_SUCCESS;
+        }
+        LPOVERLAPPED ov_ = ov->get();
         if (!DeviceIoControl(th, code, in_buf, in_buf_size, out_buf, out_buf_size, NULL, ov_))
         {
             const DWORD error_code = GetLastError();
-            if (ov)
             {
                 if (error_code == ERROR_IO_PENDING)
                 {
