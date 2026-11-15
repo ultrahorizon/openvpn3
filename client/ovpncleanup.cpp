@@ -35,9 +35,34 @@ bool OpenVPN3Cleanup::cleanup_nrpt(std::string &log)
     return true;
 }
 
+// The adapter with this interface GUID carries the IsUHVPNAdapter marker (any of the three
+// drivers). Registry reads only.
+static bool is_uh_vpn_adapter(const std::string &adapter_guid)
+{
+    using namespace ::openvpn::TunWin;
+    for (const Type t : {Type::TapWindows6, Type::Wintun, Type::OvpnDco})
+    {
+        try
+        {
+            if (!Util::tap_guids(t, adapter_guid).empty())
+                return true;
+        }
+        catch (const std::exception &)
+        {
+        }
+    }
+    return false;
+}
+
 bool OpenVPN3Cleanup::cleanup_adapter(const std::string &adapter_guid, std::string &log)
 {
     using namespace ::openvpn::TunWin;
+    // before anything else: never touch an interface that is not a UH VPN adapter
+    if (adapter_guid.empty() || !is_uh_vpn_adapter(adapter_guid))
+    {
+        log = "refused: '" + adapter_guid + "' is not a UH VPN adapter (no IsUHVPNAdapter marker); nothing changed";
+        return false;
+    }
     std::ostringstream ss;
     GUID guid;
     NET_LUID luid;
@@ -55,13 +80,24 @@ bool OpenVPN3Cleanup::cleanup_adapter(const std::string &adapter_guid, std::stri
     IpCfg::ActionResetInterface(index, adapter_guid).execute(ss);
     Util::ActionDeleteAllRoutesOnInterface(index).execute(ss);
 
-    // block-ipv6 routes (on the loopback interface) and the global DNS search list
-    static const std::pair<const char *, unsigned int> block_ipv6_net[] = {{"2000::", 4}, {"3000::", 4}, {"fc00::", 7}};
-    for (const auto &[net, prefix_len] : block_ipv6_net)
-        IpCfg::ActionRoute(net, prefix_len, 1, "", -1, false).execute(ss);
-    if (DNS::reset_stale_search_domains())
-        ss << "DNS search list reset to its value before the last session\n";
+    log = ss.str();
+    return true;
+}
 
+bool OpenVPN3Cleanup::cleanup_block_ipv6_routes(std::string &log)
+{
+    using namespace ::openvpn::TunWin;
+    std::ostringstream ss;
+    for (const auto &n : IpCfg::block_ipv6_nets)
+        IpCfg::ActionBlockIpv6Route(n.net, n.prefix_len, false).execute(ss);
+    log = ss.str();
+    return true;
+}
+
+bool OpenVPN3Cleanup::cleanup_search_domains(std::string &log)
+{
+    std::ostringstream ss;
+    ::openvpn::TunWin::DNS::remove_stale_search_domains(ss);
     log = ss.str();
     return true;
 }

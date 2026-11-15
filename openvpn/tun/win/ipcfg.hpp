@@ -166,6 +166,75 @@ class ActionDeleteRouteRow : public Action
     const std::string desc_;
 };
 
+// openvpn3's block-ipv6 routes (2000::/4, 3000::/4, fc00::/7 on the loopback interface) are
+// shared ground: stock openvpn3 clients add exactly the same routes, and Windows keys a route
+// by prefix, interface and next hop, not by metric. Ours carry a metric no stock client uses
+// (stock: 256), so that our teardown and our crash cleanup remove only routes this fork added:
+// a route that already existed when we wanted to add it is another client's and stays.
+inline constexpr ULONG BLOCK_IPV6_METRIC = 4181;
+inline constexpr DWORD BLOCK_IPV6_IFINDEX = 1; // loopback, as openvpn3 has always used
+
+struct BlockIpv6Net
+{
+    const char *net;
+    unsigned int prefix_len;
+};
+inline constexpr BlockIpv6Net block_ipv6_nets[] = {{"2000::", 4}, {"3000::", 4}, {"fc00::", 7}};
+
+class ActionBlockIpv6Route : public Action
+{
+  public:
+    ActionBlockIpv6Route(const std::string &net, const unsigned int prefix_len, const bool add)
+        : add_(add)
+    {
+        InitializeIpForwardEntry(&row_);
+        row_.InterfaceIndex = BLOCK_IPV6_IFINDEX;
+        row_.DestinationPrefix.Prefix = detail::sockaddr_inet(IP::Addr::from_string(net));
+        row_.DestinationPrefix.PrefixLength = static_cast<UINT8>(prefix_len);
+        row_.NextHop = detail::unspecified(AF_INET6);
+        row_.Metric = BLOCK_IPV6_METRIC;
+        row_.Protocol = static_cast<NL_ROUTE_PROTOCOL>(MIB_IPPROTO_NETMGMT);
+        desc_ = "block-ipv6 route " + net + '/' + std::to_string(prefix_len) + " if="
+                + std::to_string(BLOCK_IPV6_IFINDEX) + " metric=" + std::to_string(BLOCK_IPV6_METRIC);
+    }
+
+    // add: log it, and say so if the route was there already (not ours: left to its owner).
+    // delete: silent if absent; removes it only if it carries our metric.
+    void execute(std::ostream &os) override
+    {
+        if (add_)
+        {
+            os << "IPHelper: add " << desc_ << "\n";
+            const DWORD err = CreateIpForwardEntry2(&row_);
+            if (err == ERROR_OBJECT_ALREADY_EXISTS)
+                os << "IPHelper: block-ipv6 route exists already (another client's), left to it\n";
+            else
+                detail::result(os, err);
+            return;
+        }
+        MIB_IPFORWARD_ROW2 cur = row_;
+        if (GetIpForwardEntry2(&cur) != NO_ERROR)
+            return;
+        if (cur.Metric != BLOCK_IPV6_METRIC)
+        {
+            os << "IPHelper: " << desc_ << ": present with metric " << cur.Metric << " (not ours), left alone\n";
+            return;
+        }
+        os << "IPHelper: remove " << desc_ << "\n";
+        detail::result(os, DeleteIpForwardEntry2(&cur), ERROR_NOT_FOUND);
+    }
+
+    std::string to_string() const override
+    {
+        return std::string("IPHelper: ") + (add_ ? "add " : "delete ") + desc_;
+    }
+
+  private:
+    MIB_IPFORWARD_ROW2 row_;
+    const bool add_;
+    std::string desc_;
+};
+
 // Interface metric for one address family (automatic metric off).
 class ActionInterfaceMetric : public Action
 {
@@ -516,6 +585,16 @@ inline Action *route(const std::string &dest, const unsigned int prefix_len, con
     return new WinCmd(cmd + " store=active");
 #else
     return new ActionRoute(dest, prefix_len, iface_index, nexthop, metric, add);
+#endif
+}
+
+// "netsh interface ipv6 add|delete route NET interface=1 store=active" (block-ipv6).
+inline Action *block_ipv6_route(const BlockIpv6Net &n, const bool add)
+{
+#ifdef OPENVPN_USE_NETSH
+    return route(n.net, n.prefix_len, BLOCK_IPV6_IFINDEX, "interface=1", "", -1, add);
+#else
+    return new ActionBlockIpv6Route(n.net, n.prefix_len, add);
 #endif
 }
 

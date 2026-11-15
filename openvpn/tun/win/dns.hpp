@@ -52,6 +52,7 @@
 #include <openvpn/common/action.hpp>
 #include <openvpn/win/reg.hpp>
 #include <openvpn/win/netutil.hpp>
+#include <openvpn/win/procalive.hpp>
 
 namespace openvpn::TunWin {
 
@@ -267,6 +268,18 @@ class Dns
         return err ? false : true;
     }
 
+    /**
+     * UH VPN: next to the search list values, who added domains to the list: "<pid>|<domains>".
+     * Written when this fork adds to the system-wide list, deleted when it removes them, so
+     * that crash cleanup can tell our change from another openvpn3 client's.
+     */
+    static constexpr PCWSTR owner_value = L"UHVPNSearchListOwner";
+
+    static void set_owner(typename REG::Key &key, const std::wstring &domains)
+    {
+        REG::set_string(key, owner_value, std::to_wstring(::GetCurrentProcessId()) + L"|" + domains);
+    }
+
   public:
     OPENVPN_EXCEPTION(dns_error);
 
@@ -311,13 +324,53 @@ class Dns
         }
 
         std::wstring wide_domains = wstring::from_utf8(domains);
-        bool success_adding = single_domain && !list_exists
+        const bool use_itf_suffix = single_domain && !list_exists;
+        bool success_adding = use_itf_suffix
                                   ? set_itf_domain_suffix(itf_name, wide_domains)
                                   : add_to_searchlist(list_key, wide_domains);
         if (!success_adding)
         {
             remove_search_domains(itf_name, domains);
         }
+        else if (!use_itf_suffix)
+        {
+            // the system-wide list now carries our domains: say whose they are
+            set_owner(list_key, wide_domains);
+        }
+    }
+
+    /**
+     * @brief Remove the search domains a UH VPN session added and never removed (crash cleanup)
+     *
+     * The DNS search list is system-wide, and stock openvpn3 clients use the same registry
+     * values (SearchList, InitialSearchList, OriginalSearchList). So the domains are removed
+     * only if our owner value says this fork added them, and only if the process that added
+     * them is no longer running; another client's changes are left alone.
+     *
+     * @param log   what was found and done
+     * @return bool true if domains were removed
+     */
+    static bool remove_stale_search_domains(std::ostream &log)
+    {
+        auto [list_key, list_exists] = open_searchlist_key();
+        if (!list_key.defined())
+            return false;
+        auto [owner, error] = REG::get_string(list_key, owner_value);
+        if (error || owner.empty())
+            return false;
+        const auto bar = owner.find(L'|');
+        const DWORD pid = std::wcstoul(owner.c_str(), nullptr, 10);
+        const std::wstring domains = bar == owner.npos ? std::wstring() : owner.substr(bar + 1);
+        if (Win::process_running(pid))
+        {
+            log << "DNS search list: domains of running process " << pid << ", left alone\n";
+            return false;
+        }
+        if (!domains.empty())
+            remove_search_domains({}, wstring::to_utf8(domains));
+        REG::delete_value(list_key, owner_value);
+        log << "DNS search list: removed the domains an ended UH VPN session (pid " << pid << ") had added\n";
+        return true;
     }
 
     /**
@@ -339,24 +392,7 @@ class Dns
 
         REG::delete_value(list_key, L"InitialSearchList");
         REG::delete_value(list_key, L"OriginalSearchList");
-    }
-
-    /**
-     * @brief Undo a search list change whose teardown never ran (crash cleanup)
-     *
-     * set_search_domains() keeps "InitialSearchList" next to the list it changed until the
-     * domains are removed again. If it is still there while no session runs, a process ended
-     * before its teardown: reset the list as the teardown would have.
-     *
-     * @return bool  true if a list was reset
-     */
-    static bool reset_stale_search_domains()
-    {
-        auto [list_key, list_exists] = open_searchlist_key();
-        if (!list_key.defined() || !initial_searchlist_exists(list_key))
-            return false;
-        reset_search_domains(list_key);
-        return true;
+        REG::delete_value(list_key, owner_value);
     }
 
     /**
@@ -426,6 +462,7 @@ class Dns
             {
                 // Store the shortened search list
                 REG::set_string(list_key, L"SearchList", searchlist);
+                REG::delete_value(list_key, owner_value);
             }
         }
     }

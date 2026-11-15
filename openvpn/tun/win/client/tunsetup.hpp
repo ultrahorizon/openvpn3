@@ -549,19 +549,10 @@ class Setup : public SetupBase
         // Should we block IPv6?
         if (pull.block_ipv6)
         {
-            static const struct
+            for (const auto &n : IpCfg::block_ipv6_nets)
             {
-                const char *net;
-                unsigned int prefix_len;
-            } block_ipv6_net[] = {
-                {"2000::", 4},
-                {"3000::", 4},
-                {"fc00::", 7},
-            };
-            for (size_t i = 0; i < array_size(block_ipv6_net); ++i)
-            {
-                create.add(IpCfg::route(block_ipv6_net[i].net, block_ipv6_net[i].prefix_len, 1, "interface=1", "", -1, true));
-                destroy.add(IpCfg::route(block_ipv6_net[i].net, block_ipv6_net[i].prefix_len, 1, "interface=1", "", -1, false));
+                create.add(IpCfg::block_ipv6_route(n, true));
+                destroy.add(IpCfg::block_ipv6_route(n, false));
             }
         }
 

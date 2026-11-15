@@ -46,6 +46,7 @@
 #include <openvpn/win/netutil.hpp>
 #include <openvpn/win/winerr.hpp>
 #include <openvpn/win/winerr_helpers.hpp>
+#include <openvpn/win/procalive.hpp>
 
 namespace openvpn::TunWin {
 
@@ -185,24 +186,11 @@ class Nrpt
                                    if (dash == std::wstring::npos)
                                        return false;
                                    const DWORD pid = std::wcstoul(nrpt_rule_id.c_str() + dash + 1, nullptr, 10);
-                                   return pid != own_pid && !process_running(pid); },
+                                   return pid != own_pid && !Win::process_running(pid); },
                                log);
     }
 
   private:
-    static bool process_running(DWORD pid)
-    {
-        if (!pid)
-            return false;
-        HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-        if (!h)
-            return ::GetLastError() == ERROR_ACCESS_DENIED; // exists, not ours to open
-        DWORD code = 0;
-        const bool running = ::GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
-        ::CloseHandle(h);
-        return running;
-    }
-
     template <typename Pred>
     static unsigned int delete_rules_if(Pred match, std::ostream *log)
     {
