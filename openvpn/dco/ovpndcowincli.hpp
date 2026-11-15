@@ -503,11 +503,17 @@ class OvpnDcoWinClient : public Client,
             {
                 // The driver counts packets only per channel: data packets (each one tunnel
                 // packet, keepalive pings included) and control packets. Transport packets are
-                // both. The counters are 32-bit and wrap; read them unsigned.
-                const count_t data_in = static_cast<ULONG>(stats.ReceivedDataPackets);
-                const count_t data_out = static_cast<ULONG>(stats.SentDataPackets);
-                const count_t ctrl_in = static_cast<ULONG>(stats.ReceivedControlPackets);
-                const count_t ctrl_out = static_cast<ULONG>(stats.SentControlPackets);
+                // both. The counters are 32-bit and wrap: they are kept as 64-bit totals that
+                // never go backwards. A 64-bit byte counter going down means the driver zeroed
+                // its statistics (new peer).
+                const bool reset = stats.TransportBytesReceived < old_stats.transport_bytes_in
+                                   || stats.TransportBytesSent < old_stats.transport_bytes_out;
+                const auto u32 = [](LONG v)
+                { return static_cast<std::uint32_t>(static_cast<ULONG>(v)); };
+                const count_t data_in = static_cast<count_t>(pkts_data_in_.update(u32(stats.ReceivedDataPackets), reset));
+                const count_t data_out = static_cast<count_t>(pkts_data_out_.update(u32(stats.SentDataPackets), reset));
+                const count_t ctrl_in = static_cast<count_t>(pkts_ctrl_in_.update(u32(stats.ReceivedControlPackets), reset));
+                const count_t ctrl_out = static_cast<count_t>(pkts_ctrl_out_.update(u32(stats.SentControlPackets), reset));
                 last_stats = SessionStats::DCOTransportSource::Data(stats.TransportBytesReceived,
                                                                     stats.TransportBytesSent,
                                                                     stats.TunBytesReceived,
@@ -637,4 +643,5 @@ class OvpnDcoWinClient : public Client,
 
     SessionStats::DCOTransportSource::Data last_stats;
     SessionStats::DCOTransportSource::Data last_delta;
+    WrapCount32 pkts_data_in_, pkts_data_out_, pkts_ctrl_in_, pkts_ctrl_out_;
 };
