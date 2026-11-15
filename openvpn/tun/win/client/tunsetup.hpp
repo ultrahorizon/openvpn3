@@ -33,6 +33,7 @@
 #include <openvpn/tun/proxy.hpp>
 #include <openvpn/tun/win/tunutil.hpp>
 #include <openvpn/tun/win/winproxy.hpp>
+#include <openvpn/tun/win/ipcfg.hpp>
 #include <openvpn/tun/win/tunutil.hpp>
 #include <openvpn/tun/win/client/setupbase.hpp>
 #include <openvpn/win/scoped_handle.hpp>
@@ -271,8 +272,9 @@ class Setup : public SetupBase
         {
             if (!gw.local_route())
             {
-                add_cmds.add(new WinCmd("netsh interface ip add route " + route + "/32 " + to_string(gw.interface_index()) + ' ' + gw.gateway_address() + " store=active"));
-                remove_cmds_bypass_gw.add(new WinCmd("netsh interface ip delete route " + route + "/32 " + to_string(gw.interface_index()) + ' ' + gw.gateway_address() + " store=active"));
+                const std::string gw_index = to_string(gw.interface_index());
+                add_cmds.add(IpCfg::route(route, 32, gw.interface_index(), gw_index, gw.gateway_address(), -1, true));
+                remove_cmds_bypass_gw.add(IpCfg::route(route, 32, gw.interface_index(), gw_index, gw.gateway_address(), -1, false));
             }
             else
             {
@@ -348,6 +350,7 @@ class Setup : public SetupBase
      */
     void set_adapter_dns(ActionList &create,
                          ActionList &destroy,
+                         const Util::TapNameGuidPair &tap,
                          const std::string &itf_index_name,
                          const std::vector<std::string> &addresses,
                          const TunBuilderCapture &pull)
@@ -368,6 +371,23 @@ class Setup : public SetupBase
         //  [[index=]<integer>] [[validate=]yes|no]
         // Usage: delete dnsservers [name=]<string> [[address=]<IPv6 address>|all] [[validate=]yes|no]
 
+#ifndef OPENVPN_USE_NETSH
+        // one SetInterfaceDnsSettings call per address family
+        GUID guid;
+        if (tap.guid.empty() || ::IIDFromString(wstring::from_utf8(tap.guid).c_str(), &guid) != S_OK)
+            throw tun_win_setup("cannot set DNS servers: bad adapter GUID");
+        for (const bool ipv6 : {false, true})
+        {
+            std::vector<std::string> family;
+            for (const auto &address : addresses)
+                if (UseDNS::enabled(address, pull) && IP::Addr(address).is_ipv6() == ipv6)
+                    family.push_back(address);
+            if (family.empty())
+                continue;
+            create.add(new IpCfg::ActionDnsServers(guid, itf_index_name, ipv6, family));
+            destroy.add(new IpCfg::ActionDnsServers(guid, itf_index_name, ipv6, {}));
+        }
+#else
         // fix for vista and dnsserver vs win7+ dnsservers
         std::string dns_servers_cmd = "dnsservers";
         std::string validate_cmd = " validate=no";
@@ -394,6 +414,7 @@ class Setup : public SetupBase
                 }
             }
         }
+#endif
     }
 
     void register_rings(HANDLE handle, RingBuffer::Ptr ring_buffer)
@@ -471,10 +492,9 @@ class Setup : public SetupBase
             {
                 // set high metric on interface so that rogue route which Windows creates (0.0.0.0/0)
                 // won't affect anything
-                create.add(new WinCmd("netsh interface ip set interface " + tap_index_name + " metric=9000"));
+                create.add(IpCfg::interface_metric4(tap.index, tap_index_name, 9000));
 
-                const std::string metric = route_metric_opt(pull, *local4, MT_IFACE);
-                const std::string netmask = IPv4::Addr::netmask_from_prefix_len(local4->prefix_length).to_string();
+                const int gwmetric = route_metric(pull, *local4);
                 const IP::Addr localaddr = IP::Addr::from_string(local4->address);
                 const IP::Addr remoteaddr = IP::Addr::from_string(local4->gateway);
                 if (tun_type_ == TapWindows6)
@@ -484,16 +504,16 @@ class Setup : public SetupBase
                     else
                         Util::tap_configure_topology_subnet(th, localaddr, local4->prefix_length);
                 }
-                create.add(new WinCmd("netsh interface ip set address " + tap_index_name + " static " + local4->address + ' ' + netmask + " gateway=" + local4->gateway + metric + " store=active"));
-                destroy.add(new WinCmd("netsh interface ip delete address " + tap_index_name + ' ' + local4->address + " gateway=all store=active"));
+                IpCfg::set_address4(create, tap.index, tap_index_name, local4->address, local4->prefix_length, local4->gateway, gwmetric);
+                IpCfg::delete_address4(destroy, tap.index, tap_index_name, local4->address, local4->prefix_length, local4->gateway);
 
                 // specifying 'gateway' when setting ip address makes Windows add unnecessary route 0.0.0.0/0,
                 // which might cause routing conflicts, so we have to delete it after a small delay.
                 // If route is deleted before profile is created, then profile won't be created at all (OVPN-135)
-                WinCmd::Ptr cmd_delroute = new WinCmd("netsh interface ip delete route 0.0.0.0/0 " + tap_index_name + ' ' + local4->gateway + " store=active");
+                Action::Ptr cmd_delroute = IpCfg::route("0.0.0.0", 0, tap.index, tap_index_name, local4->gateway, -1, false);
 
                 // set lowest interface metric to make Windows use pushed DNS search domain
-                WinCmd::Ptr cmd_setmetric = new WinCmd("netsh interface ip set interface " + tap_index_name + " metric=1");
+                Action::Ptr cmd_setmetric = IpCfg::interface_metric4(tap.index, tap_index_name, 1);
 
                 delete_route_timer.expires_after(Time::Duration::seconds(5));
                 delete_route_timer.async_wait([self = Ptr(this),
@@ -512,15 +532,19 @@ class Setup : public SetupBase
         // Should we block IPv6?
         if (pull.block_ipv6)
         {
-            static const char *const block_ipv6_net[] = {
-                "2000::/4",
-                "3000::/4",
-                "fc00::/7",
+            static const struct
+            {
+                const char *net;
+                unsigned int prefix_len;
+            } block_ipv6_net[] = {
+                {"2000::", 4},
+                {"3000::", 4},
+                {"fc00::", 7},
             };
             for (size_t i = 0; i < array_size(block_ipv6_net); ++i)
             {
-                create.add(new WinCmd("netsh interface ipv6 add route " + std::string(block_ipv6_net[i]) + " interface=1 store=active"));
-                destroy.add(new WinCmd("netsh interface ipv6 delete route " + std::string(block_ipv6_net[i]) + " interface=1 store=active"));
+                create.add(IpCfg::route(block_ipv6_net[i].net, block_ipv6_net[i].prefix_len, 1, "interface=1", "", -1, true));
+                destroy.add(IpCfg::route(block_ipv6_net[i].net, block_ipv6_net[i].prefix_len, 1, "interface=1", "", -1, false));
             }
         }
 
@@ -535,11 +559,12 @@ class Setup : public SetupBase
         //  [[store=]active|persistent]
         if (local6 && !pull.block_ipv6 && !l2_post)
         {
-            create.add(new WinCmd("netsh interface ipv6 set address " + tap_index_name + ' ' + local6->address + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete address " + tap_index_name + ' ' + local6->address + " store=active"));
+            // netsh gives an address without a prefix length a /64, whatever the pushed prefix
+            create.add(IpCfg::address6(tap.index, tap_index_name, local6->address, 64, true));
+            destroy.add(IpCfg::address6(tap.index, tap_index_name, local6->address, 64, false));
 
-            create.add(new WinCmd("netsh interface ipv6 add route " + local6->gateway + '/' + to_string(local6->prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete route " + local6->gateway + '/' + to_string(local6->prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
+            create.add(IpCfg::route(local6->gateway, local6->prefix_length, tap.index, tap_index_name, ipv6_next_hop, -1, true));
+            destroy.add(IpCfg::route(local6->gateway, local6->prefix_length, tap.index, tap_index_name, ipv6_next_hop, -1, false));
         }
 
         // Process Routes
@@ -591,9 +616,9 @@ class Setup : public SetupBase
                 {
                     if (!pull.block_ipv6)
                     {
-                        const std::string metric = route_metric_opt(pull, route, MT_NETSH);
-                        create.add(new WinCmd("netsh interface ipv6 add route " + route.address + '/' + to_string(route.prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + metric + " store=active"));
-                        destroy.add(new WinCmd("netsh interface ipv6 delete route " + route.address + '/' + to_string(route.prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
+                        const int metric = route_metric(pull, route);
+                        create.add(IpCfg::route(route.address, route.prefix_length, tap.index, tap_index_name, ipv6_next_hop, metric, true));
+                        destroy.add(IpCfg::route(route.address, route.prefix_length, tap.index, tap_index_name, ipv6_next_hop, -1, false));
                     }
                 }
                 else
@@ -645,19 +670,19 @@ class Setup : public SetupBase
         // Process IPv4 redirect-gateway
         if (pull.reroute_gw.ipv4)
         {
-            create.add(new WinCmd("netsh interface ip add route 0.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
-            create.add(new WinCmd("netsh interface ip add route 128.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
-            destroy.add(new WinCmd("netsh interface ip delete route 0.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
-            destroy.add(new WinCmd("netsh interface ip delete route 128.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
+            create.add(IpCfg::route("0.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, true));
+            create.add(IpCfg::route("128.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, true));
+            destroy.add(IpCfg::route("0.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, false));
+            destroy.add(IpCfg::route("128.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, false));
         }
 
         // Process IPv6 redirect-gateway
         if (pull.reroute_gw.ipv6 && !pull.block_ipv6)
         {
-            create.add(new WinCmd("netsh interface ipv6 add route 0::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            create.add(new WinCmd("netsh interface ipv6 add route 8000::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete route 0::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete route 8000::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
+            create.add(IpCfg::route("0::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, true));
+            create.add(IpCfg::route("8000::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, true));
+            destroy.add(IpCfg::route("0::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, false));
+            destroy.add(IpCfg::route("8000::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, false));
         }
 
         // Process redirect-gateway "block-local" flag:
@@ -738,7 +763,7 @@ class Setup : public SetupBase
                 {
                     // Set pushed DNS servers with the adapter. In case the local resolver
                     // doesn't work the VPN DNS resolvers will serve as a fallback
-                    set_adapter_dns(create, destroy, tap_index_name, addresses, pull);
+                    set_adapter_dns(create, destroy, tap, tap_index_name, addresses, pull);
                 }
 
                 create.add(new DNS::ActionCreate(tap.name, search_domains));
@@ -749,8 +774,8 @@ class Setup : public SetupBase
                 destroy.add(new DNS::ActionApply());
 
                 // flush DNS cache
-                create.add(new WinCmd("ipconfig /flushdns"));
-                destroy.add(new WinCmd("ipconfig /flushdns"));
+                create.add(IpCfg::flush_dns());
+                destroy.add(IpCfg::flush_dns());
 
                 // Use WFP for DNS leak protection unless local traffic is blocked already.
                 // Block DNS on all interfaces except the TAP adapter.
@@ -781,7 +806,7 @@ class Setup : public SetupBase
                     std::vector<std::string> addresses;
                     std::for_each(server.addresses.begin(), server.addresses.end(), [&addresses](const DnsAddress &ip)
                                   { addresses.push_back(ip.address); });
-                    set_adapter_dns(create, destroy, tap_index_name, addresses, pull);
+                    set_adapter_dns(create, destroy, tap, tap_index_name, addresses, pull);
                 }
 
                 // If NRPT enabled and at least one IPv4 or IPv6 DNS
@@ -856,8 +881,8 @@ class Setup : public SetupBase
                 }
 
                 // flush DNS cache
-                create.add(new WinCmd("ipconfig /flushdns"));
-                destroy.add(new WinCmd("ipconfig /flushdns"));
+                create.add(IpCfg::flush_dns());
+                destroy.add(IpCfg::flush_dns());
             }
         }
 
@@ -939,6 +964,12 @@ class Setup : public SetupBase
         MT_NETSH,
         MT_IFACE,
     };
+
+    // the route's metric, else route-metric, else -1 (none)
+    static int route_metric(const TunBuilderCapture &pull, const TunBuilderCapture::RouteBase &route)
+    {
+        return route.metric >= 0 ? route.metric : pull.route_metric_default;
+    }
 
     static std::string route_metric_opt(const TunBuilderCapture &pull,
                                         const TunBuilderCapture::RouteBase &route,

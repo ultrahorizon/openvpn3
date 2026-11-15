@@ -58,6 +58,7 @@
 #include <openvpn/addr/ipv6.hpp>
 #include <openvpn/tun/builder/capture.hpp>
 #include <openvpn/win/reg.hpp>
+#include <openvpn/tun/win/ipcfg.hpp>
 #include <openvpn/win/scoped_handle.hpp>
 #include <openvpn/win/unicode.hpp>
 #include <openvpn/win/cmd.hpp>
@@ -1242,6 +1243,31 @@ class ActionDeleteAllRoutesOnInterface : public Action
   private:
     static void remove_all_ipv4_routes_on_iface(DWORD index, ActionList &actions)
     {
+#ifndef OPENVPN_USE_NETSH
+        unique_ptr_del<const MIB_IPFORWARD_TABLE2> rt2(windows_routing_table2(AF_INET),
+                                                       [](const MIB_IPFORWARD_TABLE2 *p)
+                                                       { FreeMibTable((PVOID)p); });
+        if (rt2)
+        {
+            for (size_t i = 0; i < rt2->NumEntries; ++i)
+            {
+                const MIB_IPFORWARD_ROW2 *row = &rt2->Table[i];
+                if (row->InterfaceIndex != index || row->DestinationPrefix.Prefix.si_family != AF_INET)
+                    continue;
+                const IPv4::Addr net = IPv4::Addr::from_uint32(ntohl(row->DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr));
+                const std::string net_str = net.to_string();
+                const unsigned int pl = row->DestinationPrefix.PrefixLength;
+
+                // don't remove multicast route or other Windows-assigned routes
+                if (net_str == "224.0.0.0" && pl == 4)
+                    continue;
+                if (net_str == "255.255.255.255" && pl == 32)
+                    continue;
+
+                actions.add(new IpCfg::ActionDeleteRouteRow(*row, net_str + '/' + openvpn::to_string(pl)));
+            }
+        }
+#else
         std::unique_ptr<const MIB_IPFORWARDTABLE> rt(windows_routing_table());
         if (rt)
         {
@@ -1265,6 +1291,7 @@ class ActionDeleteAllRoutesOnInterface : public Action
                 }
             }
         }
+#endif
     }
 
     static void remove_all_ipv6_routes_on_iface(DWORD index, ActionList &actions)
@@ -1292,7 +1319,11 @@ class ActionDeleteAllRoutesOnInterface : public Action
                             continue;
                         if ((net & ll_mask) == ll_net && pl >= 64)
                             continue;
+#ifndef OPENVPN_USE_NETSH
+                        actions.add(new IpCfg::ActionDeleteRouteRow(*row, net_str + '/' + openvpn::to_string(pl)));
+#else
                         actions.add(new WinCmd("netsh interface ipv6 delete route " + net_str + '/' + openvpn::to_string(pl) + ' ' + openvpn::to_string(index) + " store=active"));
+#endif
                     }
                 }
             }

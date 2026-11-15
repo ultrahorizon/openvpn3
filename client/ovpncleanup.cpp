@@ -14,7 +14,7 @@
 
 // Finally, the headers we actually need!
 #include <openvpn/tun/win/nrpt.hpp>
-#include <openvpn/win/cmd.hpp>
+#include <openvpn/tun/win/ipcfg.hpp>
 
 namespace openvpn::uhvpn {
 
@@ -26,8 +26,8 @@ bool OpenVPN3Cleanup::cleanup_nrpt(std::string &log)
     ::openvpn::TunWin::NRPT::ActionDelete delete_nrpt(0);
     delete_nrpt.execute(ss);
 
-    auto flush_cmd = ::openvpn::WinCmd("ipconfig /flushdns");
-    flush_cmd.execute(ss);
+    ::openvpn::Action::Ptr flush_cmd(::openvpn::TunWin::IpCfg::flush_dns());
+    flush_cmd->execute(ss);
 
     log = ss.str();
     return true;
