@@ -469,6 +469,12 @@ class Setup : public SetupBase
             if (tun_type_ == TapWindows6)
                 Util::tap_set_media_status(th, true);
 
+#ifndef OPENVPN_USE_NETSH
+            // undo what a session that never reached its teardown left on this adapter (DNS
+            // servers of both families, addresses, DNS suffix), and its NRPT rules
+            create.add(new IpCfg::ActionResetInterface(tap.index, tap.guid));
+            create.add(new NRPT::ActionDeleteStale(process_id_ ? process_id_ : ::GetCurrentProcessId()));
+#endif
             // try to delete any stale routes on interface left over from previous session
             create.add(new Util::ActionDeleteAllRoutesOnInterface(tap.index));
         }

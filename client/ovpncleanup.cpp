@@ -14,7 +14,9 @@
 
 // Finally, the headers we actually need!
 #include <openvpn/tun/win/nrpt.hpp>
+#include <openvpn/tun/win/dns.hpp>
 #include <openvpn/tun/win/ipcfg.hpp>
+#include <openvpn/tun/win/tunutil.hpp>
 
 namespace openvpn::uhvpn {
 
@@ -28,6 +30,37 @@ bool OpenVPN3Cleanup::cleanup_nrpt(std::string &log)
 
     ::openvpn::Action::Ptr flush_cmd(::openvpn::TunWin::IpCfg::flush_dns());
     flush_cmd->execute(ss);
+
+    log = ss.str();
+    return true;
+}
+
+bool OpenVPN3Cleanup::cleanup_adapter(const std::string &adapter_guid, std::string &log)
+{
+    using namespace ::openvpn::TunWin;
+    std::ostringstream ss;
+    GUID guid;
+    NET_LUID luid;
+    NET_IFINDEX index = 0;
+    if (adapter_guid.empty()
+        || ::IIDFromString(wstring::from_utf8(adapter_guid).c_str(), &guid) != S_OK
+        || ::ConvertInterfaceGuidToLuid(&guid, &luid) != NO_ERROR
+        || ::ConvertInterfaceLuidToIndex(&luid, &index) != NO_ERROR)
+    {
+        log = "no interface for adapter GUID '" + adapter_guid + "'";
+        return false;
+    }
+
+    // what a session's teardown would have undone on the adapter
+    IpCfg::ActionResetInterface(index, adapter_guid).execute(ss);
+    Util::ActionDeleteAllRoutesOnInterface(index).execute(ss);
+
+    // block-ipv6 routes (on the loopback interface) and the global DNS search list
+    static const std::pair<const char *, unsigned int> block_ipv6_net[] = {{"2000::", 4}, {"3000::", 4}, {"fc00::", 7}};
+    for (const auto &[net, prefix_len] : block_ipv6_net)
+        IpCfg::ActionRoute(net, prefix_len, 1, "", -1, false).execute(ss);
+    if (DNS::reset_stale_search_domains())
+        ss << "DNS search list reset to its value before the last session\n";
 
     log = ss.str();
     return true;

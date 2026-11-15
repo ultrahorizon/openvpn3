@@ -14,6 +14,13 @@ public:
     OpenVPN3Cleanup() = delete;
 
     static bool cleanup_nrpt(std::string &log);
+
+    // Undo what a session that never reached its teardown left on the VPN adapter with this
+    // interface GUID ("{...}"): addresses, DNS servers of both families, DNS suffix, routes;
+    // also openvpn3's block-ipv6 routes and a changed DNS search list. Run it only while no
+    // session runs, and only for a UH VPN adapter. false (and why in log) if the GUID names
+    // no interface.
+    static bool cleanup_adapter(const std::string &adapter_guid, std::string &log);
 };
 
 } // namespace openvpn::uhvpn

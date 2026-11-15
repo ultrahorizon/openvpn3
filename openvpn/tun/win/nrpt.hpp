@@ -159,13 +159,59 @@ class Nrpt
      */
     static unsigned int delete_rules(DWORD process_id, std::ostream *log = nullptr)
     {
+        const auto pid = L"-" + std::to_wstring(process_id);
+        return delete_rules_if([&](const std::wstring &nrpt_rule_id)
+                               { return !process_id || nrpt_rule_id.rfind(pid) == (nrpt_rule_id.size() - pid.size()); },
+                               log);
+    }
+
+    /**
+     * @brief Remove the rules left by processes that no longer run
+     *
+     * Our rules end in "-<pid>" of the process that made them. A rule whose process is gone
+     * (it crashed or was killed before its teardown) is deleted; rules of this process and of
+     * any process still running are kept. A pid that has been reused keeps its stale rule
+     * until the crash cleanup removes it.
+     *
+     * @param own_pid       the process id this process uses for its rules
+     * @param log           optional stream to report deletion failures to
+     * @return unsigned int the number of rules deleted
+     */
+    static unsigned int delete_stale_rules(DWORD own_pid, std::ostream *log = nullptr)
+    {
+        return delete_rules_if([&](const std::wstring &nrpt_rule_id)
+                               {
+                                   const auto dash = nrpt_rule_id.rfind(L'-');
+                                   if (dash == std::wstring::npos)
+                                       return false;
+                                   const DWORD pid = std::wcstoul(nrpt_rule_id.c_str() + dash + 1, nullptr, 10);
+                                   return pid != own_pid && !process_running(pid); },
+                               log);
+    }
+
+  private:
+    static bool process_running(DWORD pid)
+    {
+        if (!pid)
+            return false;
+        HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        if (!h)
+            return ::GetLastError() == ERROR_ACCESS_DENIED; // exists, not ours to open
+        DWORD code = 0;
+        const bool running = ::GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+        ::CloseHandle(h);
+        return running;
+    }
+
+    template <typename Pred>
+    static unsigned int delete_rules_if(Pred match, std::ostream *log)
+    {
         std::vector<std::wstring> del_subkeys;
         static constexpr std::array<PCWSTR, 2> nrpt_subkeys{
             REG::gpol_nrpt_subkey, REG::local_nrpt_subkey};
         // Only find rules to delete, so that the iterator stays valid
         for (const auto &nrpt_subkey : nrpt_subkeys)
         {
-            const auto pid = L"-" + std::to_wstring(process_id);
             typename REG::Key nrpt_key(nrpt_subkey);
             typename REG::KeyEnumerator nrpt_rules(nrpt_key);
 
@@ -174,7 +220,7 @@ class Nrpt
                 // remove only own policies
                 if (nrpt_rule_id.find(wstring::from_utf8(id_prefix())) != 0)
                     continue;
-                if (process_id && nrpt_rule_id.rfind(pid) != (nrpt_rule_id.size() - pid.size()))
+                if (!match(nrpt_rule_id))
                     continue;
 
                 std::wostringstream rule_subkey;
@@ -200,7 +246,6 @@ class Nrpt
         return remove_count;
     }
 
-  private:
     /**
      * Holds the information for one NRPT exclude rule, i.e. data from
      * local DNS configuration. Note that 'domains' is a MULTI_SZ string.
@@ -512,6 +557,32 @@ class Nrpt
 
       protected:
         DWORD process_id_;
+    };
+
+    class ActionDeleteStale : public Action
+    {
+      public:
+        ActionDeleteStale(DWORD own_process_id)
+            : own_process_id_(own_process_id)
+        {
+        }
+
+        void execute(std::ostream &log) override
+        {
+            const unsigned int count = delete_stale_rules(own_process_id_, &log);
+            if (count)
+                log << to_string() << " deleted " << count << " rules." << std::endl;
+        }
+
+        std::string to_string() const override
+        {
+            std::ostringstream ss;
+            ss << "NRPT::ActionDeleteStale own pid=[" << own_process_id_ << "]";
+            return ss.str();
+        }
+
+      private:
+        DWORD own_process_id_;
     };
 };
 

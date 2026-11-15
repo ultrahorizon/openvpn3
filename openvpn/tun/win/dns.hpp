@@ -342,6 +342,24 @@ class Dns
     }
 
     /**
+     * @brief Undo a search list change whose teardown never ran (crash cleanup)
+     *
+     * set_search_domains() keeps "InitialSearchList" next to the list it changed until the
+     * domains are removed again. If it is still there while no session runs, a process ended
+     * before its teardown: reset the list as the teardown would have.
+     *
+     * @return bool  true if a list was reset
+     */
+    static bool reset_stale_search_domains()
+    {
+        auto [list_key, list_exists] = open_searchlist_key();
+        if (!list_key.defined() || !initial_searchlist_exists(list_key))
+            return false;
+        reset_search_domains(list_key);
+        return true;
+    }
+
+    /**
      * @brief Remove domain suffix(es) from the system
      *
      * If a search list exists, it is restored to the previous state.

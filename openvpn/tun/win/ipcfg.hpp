@@ -30,6 +30,7 @@
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
+#include <objbase.h> // IIDFromString
 
 #include <string>
 #include <sstream>
@@ -42,7 +43,8 @@
 
 namespace openvpn::TunWin::IpCfg {
 
-#ifndef OPENVPN_USE_NETSH
+// The action classes compile in both builds; with OPENVPN_USE_NETSH only the factories at the
+// end change, and TunWin::Setup does not run ActionResetInterface.
 
 namespace detail {
 inline SOCKADDR_INET sockaddr_inet(const IP::Addr &addr)
@@ -396,7 +398,105 @@ class ActionFlushDns : public Action
     }
 };
 
-#endif // OPENVPN_USE_NETSH
+// Undo, on one adapter, what an earlier session that never reached its teardown (a crash, a
+// killed process) can have left: static DNS servers of both address families, manually added
+// unicast addresses of both families, and the connection-specific DNS suffix ("Domain"). Run
+// at the start of tunnel setup, before anything is configured, and by crash cleanup. Without
+// it, a session that pushes only IPv4 DNS servers kept a stale IPv6 DNS server from an
+// earlier one. Routes on the adapter are removed by Util::ActionDeleteAllRoutesOnInterface.
+// Only for a VPN adapter: it must never be pointed at another interface.
+class ActionResetInterface : public Action
+{
+  public:
+    ActionResetInterface(const DWORD iface_index, const std::string &iface_guid)
+        : index_(iface_index), guid_str_(iface_guid)
+    {
+    }
+
+    void execute(std::ostream &os) override
+    {
+        os << to_string() << "\n";
+        for (const ADDRESS_FAMILY af : {AF_INET, AF_INET6})
+            remove_manual_addresses(os, af);
+        GUID guid;
+        if (guid_str_.empty() || ::IIDFromString(wstring::from_utf8(guid_str_).c_str(), &guid) != S_OK)
+        {
+            os << "IPHelper: reset: adapter GUID '" << guid_str_ << "' not usable, DNS settings left alone\n";
+            return;
+        }
+        const std::string index_name = std::to_string(index_);
+        for (const bool ipv6 : {false, true})
+        {
+            if (registry_value_set(ipv6 ? "Tcpip6" : "Tcpip", L"NameServer"))
+                os << "IPHelper: clear stale " << (ipv6 ? "ipv6" : "ipv4") << " DNS servers\n";
+            ActionDnsServers(guid, index_name, ipv6, {}).execute(os);
+        }
+        clear_domain_suffix(os);
+    }
+
+    std::string to_string() const override
+    {
+        return "IPHelper: reset interface if=" + std::to_string(index_) + " " + guid_str_
+               + " (manual addresses, DNS servers, DNS suffix)";
+    }
+
+  private:
+    void remove_manual_addresses(std::ostream &os, const ADDRESS_FAMILY af) const
+    {
+        PMIB_UNICASTIPADDRESS_TABLE table = nullptr;
+        if (GetUnicastIpAddressTable(af, &table) != NO_ERROR)
+            return;
+        for (ULONG i = 0; i < table->NumEntries; ++i)
+        {
+            const MIB_UNICASTIPADDRESS_ROW &r = table->Table[i];
+            if (r.InterfaceIndex != index_ || r.PrefixOrigin != IpPrefixOriginManual)
+                continue;
+            os << "IPHelper: remove stale address if=" << index_ << (af == AF_INET6 ? " ipv6" : " ipv4") << "\n";
+            detail::result(os, DeleteUnicastIpAddressEntry(&r), ERROR_NOT_FOUND);
+        }
+        FreeMibTable(table);
+    }
+
+    // A non-empty string value under Tcpip(6)\Parameters\Interfaces\{guid} (where the static
+    // DNS servers set by SetInterfaceDnsSettings or netsh are kept, as "NameServer")
+    bool registry_value_set(const char *svc, const wchar_t *value) const
+    {
+        const std::string name = std::string("SYSTEM\\CurrentControlSet\\Services\\") + svc
+                                 + "\\Parameters\\Interfaces\\" + guid_str_;
+        HKEY key;
+        if (::RegOpenKeyExA(HKEY_LOCAL_MACHINE, name.c_str(), 0, KEY_QUERY_VALUE, &key) != ERROR_SUCCESS)
+            return false;
+        DWORD type = 0, size = 0;
+        const LSTATUS q = ::RegQueryValueExW(key, value, nullptr, &type, nullptr, &size);
+        ::RegCloseKey(key);
+        return q == ERROR_SUCCESS && size > sizeof(wchar_t);
+    }
+
+    // Tcpip\Parameters\Interfaces\{guid}\Domain: what DNS::set_itf_domain_suffix and
+    // Util::ActionSetAdapterDomainSuffix write for a pushed adapter domain suffix (our adapters
+    // have DHCP off, so never DhcpDomain)
+    void clear_domain_suffix(std::ostream &os) const
+    {
+        const std::string name = "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + guid_str_;
+        HKEY key;
+        if (::RegOpenKeyExA(HKEY_LOCAL_MACHINE, name.c_str(), 0, KEY_QUERY_VALUE | KEY_SET_VALUE, &key) != ERROR_SUCCESS)
+            return;
+        DWORD type = 0, size = 0;
+        const LSTATUS q = ::RegQueryValueExW(key, L"Domain", nullptr, &type, nullptr, &size);
+        if (q == ERROR_SUCCESS && size > sizeof(wchar_t))
+        {
+            os << "IPHelper: clear stale DNS suffix\n";
+            const wchar_t empty[] = L"";
+            const LSTATUS w = ::RegSetValueExW(key, L"Domain", 0, REG_SZ, reinterpret_cast<const BYTE *>(empty), sizeof(empty));
+            if (w != ERROR_SUCCESS)
+                os << "IPHelper: error " << w << "\n";
+        }
+        ::RegCloseKey(key);
+    }
+
+    const DWORD index_;
+    const std::string guid_str_;
+};
 
 // ---- factories used by TunWin::Setup: one call per former netsh command line
 
