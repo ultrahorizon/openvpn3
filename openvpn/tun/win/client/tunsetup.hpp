@@ -116,6 +116,11 @@ class Setup : public SetupBase
         if (!th.defined())
         {
             os << " FAILED\n";
+            if (!adapter_guid_.empty())
+                throw ErrorCode(Error::TUN_IFACE_CREATE,
+                                true,
+                                "cannot open the requested adapter " + adapter_guid_
+                                    + " (missing, not marked as a UH VPN adapter, or in use)");
             throw ErrorCode(Error::TUN_IFACE_CREATE, true, "cannot acquire TAP handle");
         }
 
@@ -374,8 +379,14 @@ class Setup : public SetupBase
 #ifndef OPENVPN_USE_NETSH
         // one SetInterfaceDnsSettings call per address family
         GUID guid;
+        // Fatal, not a fallback: without it the pushed DNS servers cannot be set (DNS would
+        // leak), and an ErrorCode so that ovpn-dco reports it like wintun does instead of
+        // reconnecting for ever.
         if (tap.guid.empty() || ::IIDFromString(wstring::from_utf8(tap.guid).c_str(), &guid) != S_OK)
-            throw tun_win_setup("cannot set DNS servers: bad adapter GUID");
+            throw ErrorCode(Error::TUN_SETUP_FAILED,
+                            true,
+                            "adapter \"" + tap.name + "\" has no usable interface GUID ('" + tap.guid
+                                + "'): cannot set its DNS servers");
         for (const bool ipv6 : {false, true})
         {
             std::vector<std::string> family;
