@@ -501,7 +501,21 @@ class OvpnDcoWinClient : public Client,
             DWORD res = dco_ioctl_(OVPN_IOCTL_GET_STATS, 0, 0, &stats, sizeof(stats));
             if (res == ERROR_SUCCESS)
             {
-                last_stats = SessionStats::DCOTransportSource::Data(stats.TransportBytesReceived, stats.TransportBytesSent, stats.TunBytesReceived, stats.TunBytesSent);
+                // The driver counts packets only per channel: data packets (each one tunnel
+                // packet, keepalive pings included) and control packets. Transport packets are
+                // both. The counters are 32-bit and wrap; read them unsigned.
+                const count_t data_in = static_cast<ULONG>(stats.ReceivedDataPackets);
+                const count_t data_out = static_cast<ULONG>(stats.SentDataPackets);
+                const count_t ctrl_in = static_cast<ULONG>(stats.ReceivedControlPackets);
+                const count_t ctrl_out = static_cast<ULONG>(stats.SentControlPackets);
+                last_stats = SessionStats::DCOTransportSource::Data(stats.TransportBytesReceived,
+                                                                    stats.TransportBytesSent,
+                                                                    stats.TunBytesReceived,
+                                                                    stats.TunBytesSent,
+                                                                    data_in + ctrl_in,
+                                                                    data_out + ctrl_out,
+                                                                    data_in,
+                                                                    data_out);
             }
         }
         catch (const ErrorCode &e)
