@@ -13,6 +13,9 @@ public:
     // to be constructed.
     OpenVPN3Cleanup() = delete;
 
+    // Remove the NRPT rules (our prefix) whose owner process has ended, then flush the DNS
+    // cache. Rules of running owners, rules whose owner cannot be read and all other NRPT
+    // rules are left alone.
     static bool cleanup_nrpt(std::string &log);
 
     // Undo what a session that never reached its teardown left on the UH VPN adapter with

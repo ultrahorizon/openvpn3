@@ -123,6 +123,16 @@ class Nrpt
         // Version
         status = REG::set_dword(rule_key, L"Version", 2);
         check_reg_error<nrpt_error>(status, "Version");
+
+        // Comment (documented NRPT value, ignored by name resolution): the owner, with its start
+        // time, so that the stale check is not fooled by a reused process id
+        const std::wstring wid = wstring::from_utf8(rule_id);
+        const auto owner = OwnerMark::parse_nrpt_owner(wid, {});
+        if (owner)
+        {
+            status = REG::set_string(rule_key, L"Comment", OwnerMark::nrpt_comment(Win::process_owner(owner->pid)));
+            check_reg_error<nrpt_error>(status, "Comment");
+        }
     }
 
     /**
@@ -161,32 +171,46 @@ class Nrpt
     static unsigned int delete_rules(DWORD process_id, std::ostream *log = nullptr)
     {
         const auto pid = L"-" + std::to_wstring(process_id);
-        return delete_rules_if([&](const std::wstring &nrpt_rule_id)
+        return delete_rules_if([&](PCWSTR, const std::wstring &nrpt_rule_id)
                                { return !process_id || nrpt_rule_id.rfind(pid) == (nrpt_rule_id.size() - pid.size()); },
                                log);
     }
 
     /**
-     * @brief Remove the rules left by processes that no longer run
+     * @brief Remove the rules left by processes that have ended
      *
-     * Our rules end in "-<pid>" of the process that made them. A rule whose process is gone
-     * (it crashed or was killed before its teardown) is deleted; rules of this process and of
-     * any process still running are kept. A pid that has been reused keeps its stale rule
-     * until the crash cleanup removes it.
+     * Only rules carrying our prefix are looked at. Their id ends in "-<pid>" and their Comment
+     * names the owner with its start time (OwnerMark). A rule is deleted only if its owner can
+     * be shown to have ended: not running, or its id now belongs to a process that started at
+     * another time. Rules of this process, of a running owner, and rules whose owner cannot be
+     * read are kept. Rules without our prefix (group policy, hand-made, other products) are
+     * never touched.
      *
      * @param own_pid       the process id this process uses for its rules
-     * @param log           optional stream to report deletion failures to
+     * @param log           optional stream: what was removed and what was left alone
      * @return unsigned int the number of rules deleted
      */
     static unsigned int delete_stale_rules(DWORD own_pid, std::ostream *log = nullptr)
     {
-        return delete_rules_if([&](const std::wstring &nrpt_rule_id)
+        const OwnerMark::Owner self = Win::process_owner(own_pid);
+        return delete_rules_if([&](PCWSTR nrpt_subkey, const std::wstring &nrpt_rule_id)
                                {
-                                   const auto dash = nrpt_rule_id.rfind(L'-');
-                                   if (dash == std::wstring::npos)
-                                       return false;
-                                   const DWORD pid = std::wcstoul(nrpt_rule_id.c_str() + dash + 1, nullptr, 10);
-                                   return pid != own_pid && !Win::process_running(pid); },
+                                   typename REG::Key rule_key(std::wstring(nrpt_subkey) + L"\\" + nrpt_rule_id);
+                                   std::wstring comment;
+                                   if (rule_key.defined())
+                                   {
+                                       auto [c, err] = REG::get_string(rule_key, L"Comment");
+                                       if (!err)
+                                           comment = c;
+                                   }
+                                   const auto owner = OwnerMark::parse_nrpt_owner(nrpt_rule_id, comment);
+                                   const auto verdict = OwnerMark::judge(owner, self, [](std::uint32_t pid)
+                                                                         { return Win::probe_process(pid); });
+                                   if (verdict == OwnerMark::Verdict::Unreadable && log)
+                                       *log << "NRPT rule " << wstring::to_utf8(nrpt_rule_id) << ": owner not readable, left alone" << std::endl;
+                                   if (verdict == OwnerMark::Verdict::Gone && log)
+                                       *log << "NRPT rule " << wstring::to_utf8(nrpt_rule_id) << ": owner has ended, removed" << std::endl;
+                                   return verdict == OwnerMark::Verdict::Gone; },
                                log);
     }
 
@@ -208,7 +232,7 @@ class Nrpt
                 // remove only own policies
                 if (nrpt_rule_id.find(wstring::from_utf8(id_prefix())) != 0)
                     continue;
-                if (!match(nrpt_rule_id))
+                if (!match(nrpt_subkey, nrpt_rule_id))
                     continue;
 
                 std::wostringstream rule_subkey;

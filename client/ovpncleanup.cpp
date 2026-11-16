@@ -23,10 +23,11 @@ namespace openvpn::uhvpn {
 bool OpenVPN3Cleanup::cleanup_nrpt(std::string &log)
 {
     std::ostringstream ss;
-    // Process id 0 removes every rule carrying our prefix, regardless of
-    // which process created it.
-    ::openvpn::TunWin::NRPT::ActionDelete delete_nrpt(0);
-    delete_nrpt.execute(ss);
+    // Only rules carrying our prefix whose owner (pid and start time, in the rule's Comment)
+    // has ended; rules of a running owner and rules we cannot read stay, and rules without
+    // our prefix are never looked at.
+    const unsigned int n = ::openvpn::TunWin::NRPT::delete_stale_rules(::GetCurrentProcessId(), &ss);
+    ss << "NRPT: removed " << n << " stale rule(s) of ended UH VPN sessions\n";
 
     ::openvpn::Action::Ptr flush_cmd(::openvpn::TunWin::IpCfg::flush_dns());
     flush_cmd->execute(ss);

@@ -13,26 +13,55 @@
 
 #include <windows.h>
 
+#include <cstdint>
+
+#include <openvpn/win/ownermark.hpp>
+
 namespace openvpn::Win {
 
 /**
- * @brief Whether a process with this id is running
+ * @brief Whether a process with this id runs, and when it started
  *
- * Used to tell state a running process owns from state a process that ended without its
- * teardown left behind. A process that exists but may not be opened counts as running.
- * A reused id makes a dead owner look alive: state is then kept, never wrongly removed.
+ * The start time is the process creation time as a FILETIME (100 ns since 1601, UTC), absent if
+ * it cannot be read. A process that exists but may not be opened counts as running with no start
+ * time, so an owner check keeps its state (OwnerMark::judge).
  */
-inline bool process_running(const DWORD pid)
+inline OwnerMark::Probe probe_process(const DWORD pid)
 {
+    OwnerMark::Probe p;
     if (!pid)
-        return false;
+        return p;
     HANDLE h = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!h)
-        return ::GetLastError() == ERROR_ACCESS_DENIED;
+    {
+        p.running = ::GetLastError() == ERROR_ACCESS_DENIED;
+        return p;
+    }
     DWORD code = 0;
-    const bool running = ::GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+    p.running = ::GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+    FILETIME created, exited, kernel, user;
+    if (p.running && ::GetProcessTimes(h, &created, &exited, &kernel, &user))
+        p.start = (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
     ::CloseHandle(h);
-    return running;
+    return p;
+}
+
+// The owner mark of a process (normally this one): its id and start time.
+inline OwnerMark::Owner process_owner(const DWORD pid)
+{
+    OwnerMark::Owner o;
+    o.pid = pid;
+    const OwnerMark::Probe p = probe_process(pid);
+    if (p.running)
+        o.start = p.start;
+    return o;
+}
+
+// OwnerMark::judge with this process as self and the live process table as the probe.
+inline OwnerMark::Verdict judge_owner(const std::optional<OwnerMark::Owner> &o)
+{
+    return OwnerMark::judge(o, process_owner(::GetCurrentProcessId()), [](std::uint32_t pid)
+                            { return probe_process(pid); });
 }
 
 } // namespace openvpn::Win
