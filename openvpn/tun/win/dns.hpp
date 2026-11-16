@@ -73,6 +73,16 @@ class Dns
      * manually created ones in the second key will be used (if they exist).
      */
     static constexpr std::array<PCWSTR, 2> searchlist_subkeys{
+        LR"(SOFTWARE\Policies\Microsoft\Windows NT\DNSClient)",
+        LR"(System\CurrentControlSet\Services\TCPIP\Parameters)"};
+
+    /**
+     * Where crash cleanup looks for our owner value: the two keys above, and the misspelt
+     * policy key ("WindowsNT", no space) that builds before the spelling was fixed used. Windows
+     * never reads that one; it holds a search list only if something created it.
+     */
+    static constexpr std::array<PCWSTR, 3> owner_value_subkeys{
+        LR"(SOFTWARE\Policies\Microsoft\Windows NT\DNSClient)",
         LR"(SOFTWARE\Policies\Microsoft\WindowsNT\DNSClient)",
         LR"(System\CurrentControlSet\Services\TCPIP\Parameters)"};
 
@@ -447,7 +457,7 @@ class Dns
     static bool remove_stale_search_domains(std::ostream &log)
     {
         bool removed = false;
-        for (const auto subkey : searchlist_subkeys)
+        for (const auto subkey : owner_value_subkeys)
         {
             typename REG::Key key(subkey);
             if (!key.defined())
