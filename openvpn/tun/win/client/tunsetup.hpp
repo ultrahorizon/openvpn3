@@ -47,6 +47,10 @@
 
 #include <versionhelpers.h>
 
+#include <chrono>
+#include <deque>
+#include <mutex>
+
 // use IP Helper on Windows by default
 #ifdef OPENVPN_USE_NETSH
 #define TUNWINDOWS Util::TunNETSH
@@ -55,6 +59,138 @@
 #endif
 
 namespace openvpn::TunWin {
+
+#ifndef OPENVPN_USE_NETSH
+/**
+ * @brief Puts our block-ipv6 routes back when someone else removes them
+ *
+ * Stock openvpn3 clients add the same block-ipv6 routes (prefix, interface and next hop) and
+ * delete them when they disconnect, and a delete does not look at the metric. While a session
+ * of ours has block-ipv6 in force, this watches IPv6 route changes (NotifyRouteChange2) and,
+ * when one of the three block-ipv6 routes is deleted, adds ours again. Our own teardown stops
+ * the guard before it removes the routes. At most max_readds re-adds per window: a client that
+ * keeps deleting them gets the last word (and a log line) instead of a loop.
+ */
+class BlockIpv6Guard : public RC<thread_safe_refcount>
+{
+  public:
+    using Ptr = RCPtr<BlockIpv6Guard>;
+    static constexpr std::size_t max_readds = 10;
+    static constexpr std::chrono::seconds window{60};
+
+    void start(std::ostream &os)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (handle_)
+            return;
+        logwrap_ = Log::Context::Wrapper();
+        active_ = true;
+        const DWORD err = ::NotifyRouteChange2(AF_INET6, &BlockIpv6Guard::on_change, this, FALSE, &handle_);
+        if (err != NO_ERROR)
+        {
+            handle_ = nullptr;
+            active_ = false;
+            os << "block-ipv6 guard: NotifyRouteChange2 error " << err << ", routes not watched\n";
+            return;
+        }
+        os << "block-ipv6 guard: watching the block-ipv6 routes\n";
+    }
+
+    // Must not be called from the notification callback (CancelMibChangeNotify2 waits for it).
+    void stop(std::ostream &os)
+    {
+        HANDLE h = nullptr;
+        std::size_t readded = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            active_ = false;
+            h = handle_;
+            handle_ = nullptr;
+            readded = readded_total_;
+        }
+        if (h)
+        {
+            ::CancelMibChangeNotify2(h);
+            os << "block-ipv6 guard: stopped (" << readded << " route(s) put back)\n";
+        }
+    }
+
+    ~BlockIpv6Guard()
+    {
+        std::ostringstream os;
+        stop(os);
+    }
+
+  private:
+    static VOID WINAPI on_change(PVOID ctx, PMIB_IPFORWARD_ROW2 row, MIB_NOTIFICATION_TYPE type)
+    {
+        if (type == MibDeleteInstance && row)
+            static_cast<BlockIpv6Guard *>(ctx)->deleted(*row);
+    }
+
+    void deleted(const MIB_IPFORWARD_ROW2 &row)
+    {
+        const IpCfg::BlockIpv6Net *n = IpCfg::block_ipv6_net_of(row);
+        if (!n)
+            return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_)
+            return;
+        Log::Context logctx(logwrap_);
+        const auto now = std::chrono::steady_clock::now();
+        while (!readds_.empty() && now - readds_.front() > window)
+            readds_.pop_front();
+        if (readds_.size() >= max_readds)
+        {
+            active_ = false;
+            OPENVPN_LOG("block-ipv6 guard: routes removed " << max_readds << " times within " << window.count()
+                                                            << " s by another program; no longer putting them back");
+            return;
+        }
+        readds_.push_back(now);
+        MIB_IPFORWARD_ROW2 ours = IpCfg::block_ipv6_row(n->net, n->prefix_len);
+        const DWORD err = ::CreateIpForwardEntry2(&ours);
+        if (err == NO_ERROR)
+            ++readded_total_;
+        OPENVPN_LOG("block-ipv6 guard: route " << n->net << '/' << n->prefix_len << " was removed by another program; "
+                                               << (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS ? "put back" : "could not put it back, error " + std::to_string(err)));
+    }
+
+    std::mutex mutex_;
+    HANDLE handle_ = nullptr;
+    bool active_ = false;
+    std::deque<std::chrono::steady_clock::time_point> readds_;
+    std::size_t readded_total_ = 0;
+    Log::Context::Wrapper logwrap_;
+};
+
+class ActionBlockIpv6Guard : public Action
+{
+  public:
+    ActionBlockIpv6Guard(BlockIpv6Guard::Ptr guard, const bool start)
+        : guard_(std::move(guard)), start_(start)
+    {
+    }
+
+    void execute(std::ostream &os) override
+    {
+        if (start_)
+            guard_->start(os);
+        else
+            guard_->stop(os);
+    }
+
+    std::string to_string() const override
+    {
+        return start_ ? "block-ipv6 guard start" : "block-ipv6 guard stop";
+    }
+
+  private:
+    BlockIpv6Guard::Ptr guard_;
+    const bool start_;
+};
+#endif
+
 class Setup : public SetupBase
 {
   public:
@@ -549,11 +685,19 @@ class Setup : public SetupBase
         // Should we block IPv6?
         if (pull.block_ipv6)
         {
+#ifndef OPENVPN_USE_NETSH
+            // the guard stops first in teardown, so that it never fights our own deletes
+            BlockIpv6Guard::Ptr guard(new BlockIpv6Guard());
+            destroy.add(new ActionBlockIpv6Guard(guard, false));
+#endif
             for (const auto &n : IpCfg::block_ipv6_nets)
             {
                 create.add(IpCfg::block_ipv6_route(n, true));
                 destroy.add(IpCfg::block_ipv6_route(n, false));
             }
+#ifndef OPENVPN_USE_NETSH
+            create.add(new ActionBlockIpv6Guard(guard, true));
+#endif
         }
 
         // Set IPv6 Interface

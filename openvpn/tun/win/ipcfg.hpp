@@ -181,19 +181,45 @@ struct BlockIpv6Net
 };
 inline constexpr BlockIpv6Net block_ipv6_nets[] = {{"2000::", 4}, {"3000::", 4}, {"fc00::", 7}};
 
+// The route row of one of our block-ipv6 routes.
+inline MIB_IPFORWARD_ROW2 block_ipv6_row(const std::string &net, const unsigned int prefix_len)
+{
+    MIB_IPFORWARD_ROW2 row;
+    InitializeIpForwardEntry(&row);
+    row.InterfaceIndex = BLOCK_IPV6_IFINDEX;
+    row.DestinationPrefix.Prefix = detail::sockaddr_inet(IP::Addr::from_string(net));
+    row.DestinationPrefix.PrefixLength = static_cast<UINT8>(prefix_len);
+    row.NextHop = detail::unspecified(AF_INET6);
+    row.Metric = BLOCK_IPV6_METRIC;
+    row.Protocol = static_cast<NL_ROUTE_PROTOCOL>(MIB_IPPROTO_NETMGMT);
+    return row;
+}
+
+// Whether a route row (as a change notification gives it) is one of the block-ipv6 routes:
+// one of the three prefixes, on the loopback interface, on-link. Any metric.
+inline const BlockIpv6Net *block_ipv6_net_of(const MIB_IPFORWARD_ROW2 &row)
+{
+    if (row.InterfaceIndex != BLOCK_IPV6_IFINDEX || row.DestinationPrefix.Prefix.si_family != AF_INET6)
+        return nullptr;
+    static const IN6_ADDR any = {};
+    if (::memcmp(&row.NextHop.Ipv6.sin6_addr, &any, sizeof(any)) != 0)
+        return nullptr;
+    for (const auto &n : block_ipv6_nets)
+    {
+        const MIB_IPFORWARD_ROW2 ours = block_ipv6_row(n.net, n.prefix_len);
+        if (row.DestinationPrefix.PrefixLength == ours.DestinationPrefix.PrefixLength
+            && ::memcmp(&row.DestinationPrefix.Prefix.Ipv6.sin6_addr, &ours.DestinationPrefix.Prefix.Ipv6.sin6_addr, sizeof(IN6_ADDR)) == 0)
+            return &n;
+    }
+    return nullptr;
+}
+
 class ActionBlockIpv6Route : public Action
 {
   public:
     ActionBlockIpv6Route(const std::string &net, const unsigned int prefix_len, const bool add)
-        : add_(add)
+        : row_(block_ipv6_row(net, prefix_len)), add_(add)
     {
-        InitializeIpForwardEntry(&row_);
-        row_.InterfaceIndex = BLOCK_IPV6_IFINDEX;
-        row_.DestinationPrefix.Prefix = detail::sockaddr_inet(IP::Addr::from_string(net));
-        row_.DestinationPrefix.PrefixLength = static_cast<UINT8>(prefix_len);
-        row_.NextHop = detail::unspecified(AF_INET6);
-        row_.Metric = BLOCK_IPV6_METRIC;
-        row_.Protocol = static_cast<NL_ROUTE_PROTOCOL>(MIB_IPPROTO_NETMGMT);
         desc_ = "block-ipv6 route " + net + '/' + std::to_string(prefix_len) + " if="
                 + std::to_string(BLOCK_IPV6_IFINDEX) + " metric=" + std::to_string(BLOCK_IPV6_METRIC);
     }
