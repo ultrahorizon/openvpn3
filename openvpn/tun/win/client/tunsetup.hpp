@@ -1058,9 +1058,12 @@ class Setup : public SetupBase
             }
         }
 
-        OPENVPN_LOG("proxy_auto_config_url " << pull.proxy_auto_config_url.url);
+        // UH VPN: a proxy the server pushes (dhcp-option PROXY_AUTO_CONFIG_URL) is never
+        // applied. openvpn3 writes it into the Internet settings of whoever holds the console
+        // (Win::Impersonate), where it outlives a crash, and over Remote Desktop or after a user
+        // switch it lands in another user's profile. UH servers push none.
         if (pull.proxy_auto_config_url.defined())
-            ProxySettings::add_actions<WinProxySettings>(pull, create, destroy);
+            os << "NOTE: the server pushed a proxy auto-config URL; ignored (UH VPN applies no pushed proxy)\n";
     }
 
     void adapter_config_l2(HANDLE th,
