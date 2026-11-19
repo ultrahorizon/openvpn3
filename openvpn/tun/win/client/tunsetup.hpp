@@ -458,24 +458,25 @@ class Setup : public SetupBase
       public:
         UseDNS() = default;
 
-        UseDNS(const TunBuilderCapture &pull)
+        // block_ipv6: IPv6 blocked for this session (pushed, or see Setup::block_ipv6_)
+        UseDNS(const TunBuilderCapture &pull, const bool block_ipv6)
         {
             if (pull.dns_options.servers.empty())
                 return;
             for (const auto &ip : pull.dns_options.servers.begin()->second.addresses)
-                add(ip.address, pull);
+                add(ip.address, block_ipv6);
         }
 
         static bool enabled(const std::string &address,
-                            const TunBuilderCapture &pull)
+                            const bool block_ipv6)
         {
-            return IP::Addr(address).is_ipv6() && pull.block_ipv6 ? false : true;
+            return IP::Addr(address).is_ipv6() && block_ipv6 ? false : true;
         }
 
         int add(const std::string &address,
-                const TunBuilderCapture &pull)
+                const bool block_ipv6)
         {
-            if (enabled(address, pull))
+            if (enabled(address, block_ipv6))
                 return indices[IP::Addr(address).is_ipv6() ? 1 : 0]++;
             else
                 return -1;
@@ -541,7 +542,7 @@ class Setup : public SetupBase
         {
             std::vector<std::string> family;
             for (const auto &address : addresses)
-                if (UseDNS::enabled(address, pull) && IP::Addr(address).is_ipv6() == ipv6)
+                if (UseDNS::enabled(address, block_ipv6_) && IP::Addr(address).is_ipv6() == ipv6)
                     family.push_back(address);
             if (family.empty())
                 continue;
@@ -562,7 +563,7 @@ class Setup : public SetupBase
         for (const auto &address : addresses)
         {
             // 0-based index for specific IPv4/IPv6 protocol, or -1 if disabled
-            const int count = dc.add(address, pull);
+            const int count = dc.add(address, block_ipv6_);
             if (count >= 0)
             {
                 const std::string proto = IP::Addr(address).is_ipv6() ? "ipv6" : "ip";
@@ -623,6 +624,15 @@ class Setup : public SetupBase
         // set local4 and local6 to point to IPv4/6 route configurations
         const TunBuilderCapture::RouteAddress *local4 = pull.vpn_ipv4();
         const TunBuilderCapture::RouteAddress *local6 = pull.vpn_ipv6();
+
+        // UH VPN: a tunnel that takes the IPv4 default route but gives no IPv6 address would
+        // leave the native IPv6 default route in place, so dual-stack sites would be reached
+        // from the user's real address. IPv6 is then blocked for the session as if the server
+        // had pushed block-ipv6 (same routes, metric and guard). A server that gives IPv6
+        // (ifconfig-ipv6) is not affected.
+        block_ipv6_ = pull.block_ipv6 || (pull.reroute_gw.ipv4 && !local6);
+        if (block_ipv6_ && !pull.block_ipv6)
+            os << "IPv4 default route through the tunnel and no IPv6 address in it: blocking IPv6 for this session\n";
 
         if (!l2_post)
         {
@@ -697,7 +707,7 @@ class Setup : public SetupBase
         }
 
         // Should we block IPv6?
-        if (pull.block_ipv6)
+        if (block_ipv6_)
         {
 #ifndef OPENVPN_USE_NETSH
             // the guard stops first in teardown, so that it never fights our own deletes
@@ -723,7 +733,7 @@ class Setup : public SetupBase
         //  [[store=]active|persistent]
         // Usage: delete address [interface=]<string> [address=]<IPv6 address>
         //  [[store=]active|persistent]
-        if (local6 && !pull.block_ipv6 && !l2_post)
+        if (local6 && !block_ipv6_ && !l2_post)
         {
             // netsh gives an address without a prefix length a /64, whatever the pushed prefix
             create.add(IpCfg::address6(tap.index, tap_index_name, local6->address, 64, true));
@@ -797,7 +807,7 @@ class Setup : public SetupBase
                 }
                 if (route.ipv6)
                 {
-                    if (!pull.block_ipv6)
+                    if (!block_ipv6_)
                     {
                         const int metric = route_metric(pull, route);
                         create.add(IpCfg::route(route.address, route.prefix_length, tap.index, tap_index_name, ipv6_next_hop, metric, true));
@@ -860,7 +870,7 @@ class Setup : public SetupBase
         }
 
         // Process IPv6 redirect-gateway
-        if (pull.reroute_gw.ipv6 && !pull.block_ipv6)
+        if (pull.reroute_gw.ipv6 && !block_ipv6_)
         {
             create.add(IpCfg::route("0::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, true));
             create.add(IpCfg::route("8000::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, true));
@@ -975,7 +985,7 @@ class Setup : public SetupBase
                 const bool use_nrpt = IsWindows8OrGreater();
 
                 // count IPv4/IPv6 DNS servers
-                const UseDNS dns(pull);
+                const UseDNS dns(pull, block_ipv6_);
                 const DnsServer &server = pull.dns_options.servers.begin()->second;
 
                 // will DNS requests be split between VPN DNS server and local?
@@ -1196,5 +1206,8 @@ class Setup : public SetupBase
     Util::TapNameGuidPair tap_;
     bool allow_local_dns_resolvers = false;
     DWORD process_id_ = 0;
+    // IPv6 blocked for the current session: pushed block-ipv6, or IPv4 redirected with no
+    // IPv6 address in the tunnel (set by adapter_config)
+    bool block_ipv6_ = false;
 };
 } // namespace openvpn::TunWin
