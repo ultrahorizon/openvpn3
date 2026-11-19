@@ -409,19 +409,33 @@ class Setup : public SetupBase
                                  ActionList &add_cmds,
                                  ActionList &remove_cmds_bypass_gw)
     {
-        if (!ipv6)
+        // UH VPN: IPv6 too, as a /128 (upstream added IPv4 bypass routes only)
+        const unsigned int host = ipv6 ? 128 : 32;
+        if (!gw.local_route())
         {
-            if (!gw.local_route())
-            {
-                const std::string gw_index = to_string(gw.interface_index());
-                add_cmds.add(IpCfg::route(route, 32, gw.interface_index(), gw_index, gw.gateway_address(), -1, true));
-                remove_cmds_bypass_gw.add(IpCfg::route(route, 32, gw.interface_index(), gw_index, gw.gateway_address(), -1, false));
-            }
-            else
-            {
-                OPENVPN_LOG("Skip bypass route to " << route << ", route is local");
-            }
+            const std::string gw_index = to_string(gw.interface_index());
+            add_cmds.add(IpCfg::route(route, host, gw.interface_index(), gw_index, gw.gateway_address(), -1, true));
+            remove_cmds_bypass_gw.add(IpCfg::route(route, host, gw.interface_index(), gw_index, gw.gateway_address(), -1, false));
         }
+        else
+        {
+            OPENVPN_LOG("Skip bypass route to " << route << ", route is local");
+        }
+    }
+
+    // UH VPN: whether a pushed include route would take the server's own address: one of the
+    // same family that contains it and, when a host bypass route to it is in place, is a host
+    // route too (anything shorter loses to the bypass route by prefix length; a host route
+    // competes by metric, and a pushed one can be lower).
+    static bool captures_server(const TunBuilderCapture::Route &route, const IP::Addr &server, const bool bypassed)
+    {
+        if (!server.defined() || route.ipv6 != server.is_ipv6())
+            return false;
+        const unsigned int host = server.is_ipv6() ? 128 : 32;
+        if (bypassed && route.prefix_length < host)
+            return false;
+        return IP::Addr::from_string(route.address).network_addr(route.prefix_length)
+               == server.network_addr(route.prefix_length);
     }
 
   private:
@@ -742,6 +756,9 @@ class Setup : public SetupBase
         //  [[store=]active|persistent]
 
         // Add Bypass Route
+        // UH VPN: for an IPv6 server too (a /128), so that neither redirect-gateway ipv6 nor
+        // block-ipv6 takes the session's own packets into the tunnel or the blackhole.
+        bool bypassed = false; // a host route to the server via the physical gateway is in place
         {
             // get default gateway
             ADDRESS_FAMILY af = pull.remote_address.ipv6 ? AF_INET6 : AF_INET;
@@ -752,8 +769,11 @@ class Setup : public SetupBase
                 // add server bypass route
                 if (gw.defined())
                 {
-                    if (!pull.remote_address.ipv6 && !(pull.reroute_gw.flags & RedirectGatewayFlags::RG_LOCAL))
-                        add_bypass_route(gw, pull.remote_address.address, false, create, destroy);
+                    if (!(pull.reroute_gw.flags & RedirectGatewayFlags::RG_LOCAL))
+                    {
+                        add_bypass_route(gw, pull.remote_address.address, pull.remote_address.ipv6, create, destroy);
+                        bypassed = true;
+                    }
                 }
                 else
                     throw tun_win_setup("redirect-gateway error: cannot find gateway for bypass route");
@@ -762,8 +782,19 @@ class Setup : public SetupBase
 
         // Process include routes
         {
+            const IP::Addr server = IP::Addr::from_string(pull.remote_address.address);
             for (auto &route : pull.add_routes)
             {
+                // UH VPN: a pushed route that would win over the way to the server (a host route
+                // to it, which can carry a lower metric than our bypass route, or with no bypass
+                // route any route containing it) would send the session's own packets into the
+                // tunnel: a loop. Dropped.
+                if (captures_server(route, server, bypassed))
+                {
+                    os << "NOTE: pushed route " << route.to_string()
+                       << " would take the VPN server's own address into the tunnel; ignored\n";
+                    continue;
+                }
                 if (route.ipv6)
                 {
                     if (!pull.block_ipv6)
