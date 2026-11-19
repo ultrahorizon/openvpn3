@@ -18,11 +18,22 @@ public:
     // rules are left alone.
     static bool cleanup_nrpt(std::string &log);
 
+    // What cleanup_adapter did.
+    enum class AdapterCleanup
+    {
+        Done,    // the adapter was reset (log says what was removed)
+        Refused, // not a UH VPN adapter, or no interface: nothing changed, why in log
+        InUse,   // its ovpn-dco device is open (a session, ours or another program's): nothing changed
+    };
+
     // Undo what a session that never reached its teardown left on the UH VPN adapter with
     // this interface GUID ("{...}"): addresses, DNS servers of both families, DNS suffix,
-    // routes. Run it only while no session runs. Refuses (false, nothing changed, why in log)
-    // an adapter without the IsUHVPNAdapter marker or a GUID that names no interface.
-    static bool cleanup_adapter(const std::string &adapter_guid, std::string &log);
+    // routes. Refuses an adapter without the IsUHVPNAdapter marker or a GUID that names no
+    // interface. For an ovpn-dco adapter, first opens its device exclusively, as a session
+    // does, and holds it during the reset: if that fails a session is using the adapter
+    // (OpenVPN 2.6 and OpenVPN Connect open the first free ovpn-dco adapter, which can be
+    // ours) and nothing is changed.
+    static AdapterCleanup cleanup_adapter(const std::string &adapter_guid, std::string &log);
 
     // Remove the block-ipv6 routes a UH VPN session added and never removed: only routes
     // with this fork's metric (stock openvpn3 clients add the same prefixes). log says what
