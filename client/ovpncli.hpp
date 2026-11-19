@@ -329,6 +329,12 @@ struct ConfigCommon
     // IsUHVPNAdapter=1.  If empty, the first marked adapter that opens is used.
     std::string windowsAdapterGuid;
 
+    // UH VPN: on Windows, a file to which each session writes the routes it adds on a
+    // physical interface (the bypass route to the server, net_gateway routes) before adding
+    // them, and which it deletes after removing them, so that the application can remove
+    // exactly those after a crash (format: TunWin::RouteRecord). Empty: no record.
+    std::string windowsRouteRecordFile;
+
     // Allow usage of legacy (cipher) algorithm that are no longer considered safe
     // This includes BF-CBC, single DES and RC2 private key encryption.
     // With OpenSSL 3.0 this also instructs OpenSSL to load the legacy provider.

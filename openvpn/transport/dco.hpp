@@ -61,11 +61,12 @@ struct DCO : public virtual RC<thread_unsafe_refcount>
             if (setup_factory)
                 return setup_factory->new_setup_obj(io_context, TunWin::OvpnDco, allow_local_dns_resolvers);
             else
-                return new TunWin::Setup(io_context, TunWin::OvpnDco, allow_local_dns_resolvers, adapter_guid);
+                return new TunWin::Setup(io_context, TunWin::OvpnDco, allow_local_dns_resolvers, adapter_guid, route_record_file);
         }
 
         TunWin::DcoTunPersist::Ptr tun_persist;
         std::string adapter_guid; // empty: first marked adapter
+        std::string route_record_file; // empty: no route record (TunWin::RouteRecord)
 #endif
 
         TunProp::Config tun_prop;

@@ -51,6 +51,7 @@ class ClientConfig : public TunClientFactory
     TunWin::Type tun_type = TunWin::TapWindows6;
     bool allow_local_dns_resolvers = false;
     std::string adapter_guid; // empty: first marked adapter
+    std::string route_record_file; // empty: no route record (TunWin::RouteRecord)
 
     Frame::Ptr frame;
     SessionStats::Ptr stats;
@@ -66,7 +67,7 @@ class ClientConfig : public TunClientFactory
         if (tun_setup_factory)
             return tun_setup_factory->new_setup_obj(io_context, tun_type, allow_local_dns_resolvers);
         else
-            return new TunWin::Setup(io_context, tun_type, allow_local_dns_resolvers, adapter_guid);
+            return new TunWin::Setup(io_context, tun_type, allow_local_dns_resolvers, adapter_guid, route_record_file);
     }
 
     static Ptr new_obj()

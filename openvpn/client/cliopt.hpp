@@ -386,6 +386,7 @@ class ClientOptions : public RC<thread_unsafe_refcount>
             if (config.clientconf.tunPersist)
                 tunconf.tun_persist.reset(new TunWin::DcoTunPersist(true, TunWrapObjRetain::NO_RETAIN_NO_REPLACE, nullptr));
             tunconf.adapter_guid = config.clientconf.windowsAdapterGuid;
+            tunconf.route_record_file = config.clientconf.windowsRouteRecordFile;
 #endif
             tun_factory = dco->new_tun_factory(tunconf, opt);
         }
@@ -513,6 +514,7 @@ class ClientOptions : public RC<thread_unsafe_refcount>
                 tunconf->tun_type = config.clientconf.wintun ? TunWin::Wintun : TunWin::TapWindows6;
                 tunconf->allow_local_dns_resolvers = allow;
                 tunconf->adapter_guid = config.clientconf.windowsAdapterGuid;
+                tunconf->route_record_file = config.clientconf.windowsRouteRecordFile;
                 if (config.clientconf.tunPersist)
                 {
                     tunconf->tun_persist.reset(new TunWin::TunPersist(true, TunWrapObjRetain::NO_RETAIN, nullptr));

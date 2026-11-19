@@ -191,6 +191,161 @@ class ActionBlockIpv6Guard : public Action
 };
 #endif
 
+/**
+ * @brief UH VPN: a file listing the routes a session adds on a physical interface
+ *
+ * The bypass route to the server and pushed net_gateway routes go on the physical interface,
+ * where nothing marks them as a VPN's: a session that never reaches its teardown (crash,
+ * killed process) leaves them, and crash cleanup of the VPN adapter cannot find them. When the
+ * client names a file (ClientAPI::Config::windowsRouteRecordFile), the session writes these
+ * routes to it before adding them and deletes it after removing them, so the application can
+ * remove exactly those after a crash. A route that exists already when the record is written
+ * is another program's: it is left out (and logged).
+ *
+ * Format (UTF-8 text, written to a temporary file and moved over the old one):
+ *   uhvpn-route-record 1
+ *   boot <seconds since 1970 at which this boot started, from GetTickCount64>
+ *   pid <process id>
+ *   route <network>/<prefix length> <interface LUID> <next hop, or - for on-link> <metric>
+ */
+class RouteRecord : public RC<thread_unsafe_refcount>
+{
+  public:
+    using Ptr = RCPtr<RouteRecord>;
+
+    explicit RouteRecord(std::string path)
+        : path_(std::move(path))
+    {
+    }
+
+    // metric: exactly as the route is added (IpCfg::ActionRoute gives -1 as 256; the
+    // TUNWINDOWS::AddRoute4Cmd of exclude routes passes its value through)
+    void add(const std::string &dest, const unsigned int prefix_len, const DWORD if_index, const std::string &nexthop, const ULONG metric)
+    {
+        entries_.push_back({dest, prefix_len, if_index, nexthop, metric});
+    }
+
+    bool empty() const
+    {
+        return entries_.empty();
+    }
+
+    void write(std::ostream &os) const
+    {
+        std::ostringstream text;
+        text << "uhvpn-route-record 1\n";
+        text << "boot " << (static_cast<long long>(::time(nullptr)) - static_cast<long long>(::GetTickCount64() / 1000)) << "\n";
+        text << "pid " << ::GetCurrentProcessId() << "\n";
+        std::size_t n = 0;
+        for (const auto &e : entries_)
+        {
+            const IP::Addr net = IP::Addr::from_string(e.dest).network_addr(e.prefix_len);
+            const std::string desc = net.to_string() + '/' + std::to_string(e.prefix_len) + " if=" + std::to_string(e.if_index);
+            NET_LUID luid{};
+            if (::ConvertInterfaceIndexToLuid(e.if_index, &luid) != NO_ERROR)
+            {
+                os << "route record: no LUID for interface " << e.if_index << ", " << desc << " not recorded\n";
+                continue;
+            }
+            MIB_IPFORWARD_ROW2 row;
+            ::InitializeIpForwardEntry(&row);
+            row.InterfaceLuid = luid;
+            row.DestinationPrefix.Prefix = IpCfg::detail::sockaddr_inet(net);
+            row.DestinationPrefix.PrefixLength = static_cast<UINT8>(e.prefix_len);
+            row.NextHop = e.nexthop.empty() ? IpCfg::detail::unspecified(row.DestinationPrefix.Prefix.si_family)
+                                            : IpCfg::detail::sockaddr_inet(IP::Addr::from_string(e.nexthop));
+            if (::GetIpForwardEntry2(&row) == NO_ERROR)
+            {
+                os << "route record: " << desc << " exists already (another program's), not recorded\n";
+                continue;
+            }
+            text << "route " << net.to_string() << '/' << e.prefix_len << ' ' << luid.Value << ' '
+                 << (e.nexthop.empty() ? std::string("-") : IP::Addr::from_string(e.nexthop).to_string()) << ' '
+                 << e.metric << "\n";
+            ++n;
+        }
+        const DWORD err = write_file(text.str());
+        if (err == NO_ERROR)
+            os << "route record: " << n << " route(s) on the physical interface recorded for crash cleanup\n";
+        else
+            os << "route record: cannot write " << path_ << ", error " << err << "\n";
+    }
+
+    void remove(std::ostream &os) const
+    {
+        const std::wstring w = wstring::from_utf8(path_);
+        if (::DeleteFileW(w.c_str()))
+            os << "route record: removed\n";
+        else if (::GetLastError() != ERROR_FILE_NOT_FOUND)
+            os << "route record: cannot delete " << path_ << ", error " << ::GetLastError() << "\n";
+    }
+
+  private:
+    struct Entry
+    {
+        std::string dest;
+        unsigned int prefix_len;
+        DWORD if_index;
+        std::string nexthop;
+        ULONG metric;
+    };
+
+    DWORD write_file(const std::string &data) const
+    {
+        const std::wstring final_path = wstring::from_utf8(path_);
+        const std::wstring tmp = final_path + L".tmp";
+        HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return ::GetLastError();
+        DWORD written = 0;
+        const BOOL ok = ::WriteFile(h, data.data(), static_cast<DWORD>(data.size()), &written, nullptr)
+                        && written == data.size() && ::FlushFileBuffers(h);
+        const DWORD err = ok ? NO_ERROR : ::GetLastError();
+        ::CloseHandle(h);
+        if (!ok)
+        {
+            ::DeleteFileW(tmp.c_str());
+            return err ? err : ERROR_WRITE_FAULT;
+        }
+        if (!::MoveFileExW(tmp.c_str(), final_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            const DWORD e = ::GetLastError();
+            ::DeleteFileW(tmp.c_str());
+            return e;
+        }
+        return NO_ERROR;
+    }
+
+    const std::string path_;
+    std::vector<Entry> entries_;
+};
+
+class ActionRouteRecord : public Action
+{
+  public:
+    ActionRouteRecord(RouteRecord::Ptr record, const bool write)
+        : record_(std::move(record)), write_(write)
+    {
+    }
+
+    void execute(std::ostream &os) override
+    {
+        if (write_)
+            record_->write(os);
+        else
+            record_->remove(os);
+    }
+
+    std::string to_string() const override
+    {
+        return write_ ? "route record write" : "route record remove";
+    }
+
+  private:
+    RouteRecord::Ptr record_;
+    const bool write_;
+};
+
 class Setup : public SetupBase
 {
   public:
@@ -199,10 +354,12 @@ class Setup : public SetupBase
     Setup(openvpn_io::io_context &io_context_arg,
           const Type tun_type,
           bool allow_local_dns_resolvers_arg,
-          const std::string &adapter_guid = "")
+          const std::string &adapter_guid = "",
+          const std::string &route_record_file = "")
         : delete_route_timer(io_context_arg),
           tun_type_(tun_type),
           adapter_guid_(adapter_guid),
+          route_record_file_(route_record_file),
           allow_local_dns_resolvers(allow_local_dns_resolvers_arg)
     {
     }
@@ -631,6 +788,11 @@ class Setup : public SetupBase
         // had pushed block-ipv6 (same routes, metric and guard). A server that gives IPv6
         // (ifconfig-ipv6) is not affected.
         block_ipv6_ = pull.block_ipv6 || (pull.reroute_gw.ipv4 && !local6);
+
+        // UH VPN: routes this session puts on a physical interface, for crash cleanup
+        RouteRecord::Ptr record;
+        if (!route_record_file_.empty() && !l2_post)
+            record.reset(new RouteRecord(route_record_file_));
         if (block_ipv6_ && !pull.block_ipv6)
             os << "IPv4 default route through the tunnel and no IPv6 address in it: blocking IPv6 for this session\n";
 
@@ -782,6 +944,8 @@ class Setup : public SetupBase
                     if (!(pull.reroute_gw.flags & RedirectGatewayFlags::RG_LOCAL))
                     {
                         add_bypass_route(gw, pull.remote_address.address, pull.remote_address.ipv6, create, destroy);
+                        if (record)
+                            record->add(pull.remote_address.address, pull.remote_address.ipv6 ? 128 : 32, gw.interface_index(), gw.gateway_address(), 256);
                         bypassed = true;
                     }
                 }
@@ -851,6 +1015,8 @@ class Setup : public SetupBase
                     {
                         create.add(new TUNWINDOWS::AddRoute4Cmd(route.address, route.prefix_length, gw.interface_index(), "", gw.gateway_address(), metric, true));
                         destroy.add(new TUNWINDOWS::AddRoute4Cmd(route.address, route.prefix_length, gw.interface_index(), "", gw.gateway_address(), metric, false));
+                        if (record)
+                            record->add(route.address, route.prefix_length, gw.interface_index(), gw.gateway_address(), static_cast<ULONG>(metric));
                     }
                 }
                 if (ipv6_error)
@@ -1105,6 +1271,14 @@ class Setup : public SetupBase
         // switch it lands in another user's profile. UH servers push none.
         if (pull.proxy_auto_config_url.defined())
             os << "NOTE: the server pushed a proxy auto-config URL; ignored (UH VPN applies no pushed proxy)\n";
+
+        // UH VPN: the record is written before anything else is changed, and removed after
+        // everything else is undone
+        if (record && !record->empty())
+        {
+            create.insert(create.begin(), Action::Ptr(new ActionRouteRecord(record, true)));
+            destroy.add(new ActionRouteRecord(record, false));
+        }
     }
 
     void adapter_config_l2(HANDLE th,
@@ -1203,6 +1377,7 @@ class Setup : public SetupBase
 
     const Type tun_type_;
     const std::string adapter_guid_;
+    const std::string route_record_file_; // empty: no route record (see RouteRecord)
     Util::TapNameGuidPair tap_;
     bool allow_local_dns_resolvers = false;
     DWORD process_id_ = 0;
