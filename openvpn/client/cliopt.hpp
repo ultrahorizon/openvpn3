@@ -261,8 +261,12 @@ class ClientOptions : public RC<thread_unsafe_refcount>
                                                              !config.clientconf.enableNonPreferredDCAlgorithms,
                                                              config.clientconf.enableLegacyAlgorithms);
 
+        // uh-xor is applied in user space only, so the kernel data channel
+        // would send and expect unobfuscated packets: never use dco with it
+        const bool use_dco = config.clientconf.dco && !opt.exists("uh-xor");
+
 #if (defined(ENABLE_KOVPN) || defined(ENABLE_OVPNDCO) || defined(ENABLE_OVPNDCOWIN)) && !defined(OPENVPN_FORCE_TUN_NULL) && !defined(OPENVPN_EXTERNAL_TUN_FACTORY)
-        if (config.clientconf.dco)
+        if (use_dco)
 #if defined(USE_TUN_BUILDER)
             dco = DCOTransport::new_controller(config.builder);
 #else
@@ -330,7 +334,7 @@ class ClientOptions : public RC<thread_unsafe_refcount>
         // throw an exception if dco is requested but config/options are dco-incompatible
         bool dco_compatible = false;
         std::tie(dco_compatible, std::ignore) = check_dco_compatibility(clientconf, opt);
-        if (config.clientconf.dco && !dco_compatible)
+        if (use_dco && !dco_compatible)
         {
             throw option_error(ERR_INVALID_CONFIG, "dco_compatibility: config/options are not compatible with dco");
         }
@@ -381,6 +385,8 @@ class ClientOptions : public RC<thread_unsafe_refcount>
 #if defined(OPENVPN_PLATFORM_WIN)
             if (config.clientconf.tunPersist)
                 tunconf.tun_persist.reset(new TunWin::DcoTunPersist(true, TunWrapObjRetain::NO_RETAIN_NO_REPLACE, nullptr));
+            tunconf.adapter_guid = config.clientconf.windowsAdapterGuid;
+            tunconf.route_record_file = config.clientconf.windowsRouteRecordFile;
 #endif
             tun_factory = dco->new_tun_factory(tunconf, opt);
         }
@@ -507,6 +513,8 @@ class ClientOptions : public RC<thread_unsafe_refcount>
                 tunconf->stop = config.stop;
                 tunconf->tun_type = config.clientconf.wintun ? TunWin::Wintun : TunWin::TapWindows6;
                 tunconf->allow_local_dns_resolvers = allow;
+                tunconf->adapter_guid = config.clientconf.windowsAdapterGuid;
+                tunconf->route_record_file = config.clientconf.windowsRouteRecordFile;
                 if (config.clientconf.tunPersist)
                 {
                     tunconf->tun_persist.reset(new TunWin::TunPersist(true, TunWrapObjRetain::NO_RETAIN, nullptr));
@@ -605,10 +613,12 @@ class ClientOptions : public RC<thread_unsafe_refcount>
     }
 
     // If those options are present, dco cannot be used
+    // (with uh-xor the session runs without dco instead of failing)
     inline static std::unordered_set<std::string> dco_incompatible_opts = {
         "http-proxy",
         "compress",
-        "comp-lzo"};
+        "comp-lzo",
+        "uh-xor"};
 
 
     /** Checks if there are dco-incompatible options in options list or config has

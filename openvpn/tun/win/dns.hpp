@@ -45,6 +45,7 @@
 #pragma once
 
 #include <array>
+#include <sstream>
 
 #include <winternl.h>
 
@@ -52,6 +53,7 @@
 #include <openvpn/common/action.hpp>
 #include <openvpn/win/reg.hpp>
 #include <openvpn/win/netutil.hpp>
+#include <openvpn/win/procalive.hpp>
 
 namespace openvpn::TunWin {
 
@@ -71,6 +73,16 @@ class Dns
      * manually created ones in the second key will be used (if they exist).
      */
     static constexpr std::array<PCWSTR, 2> searchlist_subkeys{
+        LR"(SOFTWARE\Policies\Microsoft\Windows NT\DNSClient)",
+        LR"(System\CurrentControlSet\Services\TCPIP\Parameters)"};
+
+    /**
+     * Where crash cleanup looks for our owner value: the two keys above, and the misspelt
+     * policy key ("WindowsNT", no space) that builds before the spelling was fixed used. Windows
+     * never reads that one; it holds a search list only if something created it.
+     */
+    static constexpr std::array<PCWSTR, 3> owner_value_subkeys{
+        LR"(SOFTWARE\Policies\Microsoft\Windows NT\DNSClient)",
         LR"(SOFTWARE\Policies\Microsoft\WindowsNT\DNSClient)",
         LR"(System\CurrentControlSet\Services\TCPIP\Parameters)"};
 
@@ -267,6 +279,69 @@ class Dns
         return err ? false : true;
     }
 
+    /**
+     * UH VPN: next to the search list values, who added domains to the list (OwnerMark
+     * SearchListMark: owner pid and start time, whether its session took the InitialSearchList /
+     * OriginalSearchList snapshot, its domains). Written when this fork adds to the system-wide
+     * list, deleted when it removes them, so that crash cleanup can tell our change from another
+     * openvpn3 client's, and an ended owner from a process that now has its id.
+     */
+    static constexpr PCWSTR owner_value = L"UHVPNSearchListOwner";
+
+    // Delete the owner value only if it is this process's: never another owner's
+    static void clear_owner_if_ours(typename REG::Key &key)
+    {
+        auto [value, error] = REG::get_string(key, owner_value);
+        if (error)
+            return;
+        const auto mark = OwnerMark::parse_search_list_mark(value);
+        if (Win::judge_owner(mark ? std::optional<OwnerMark::Owner>(mark->owner) : std::nullopt) == OwnerMark::Verdict::Own)
+            REG::delete_value(key, owner_value);
+    }
+
+    static void set_owner(typename REG::Key &key, const std::wstring &domains, const bool snapshot_ours)
+    {
+        OwnerMark::SearchListMark m;
+        m.owner = Win::process_owner(::GetCurrentProcessId());
+        m.snapshot_ours = snapshot_ours;
+        m.domains = domains;
+        REG::set_string(key, owner_value, OwnerMark::format_search_list_mark(m));
+    }
+
+    /**
+     * Undo what an ended owner's mark records: remove its domains (whole entries) from the list
+     * and, if its session took the snapshot and nothing else changed the list since, restore the
+     * list it replaced and remove the snapshot values. Another client's domains and snapshot are
+     * left as they are.
+     */
+    static void remove_owned_domains(typename REG::Key &key, const OwnerMark::SearchListMark &m, std::ostream &log)
+    {
+        auto [searchlist, error] = REG::get_string(key, L"SearchList");
+        const auto shortened = error ? std::optional<std::wstring>() : OwnerMark::remove_domains(searchlist, m.domains);
+        const std::wstring now = shortened ? *shortened : searchlist;
+        auto [initiallist, err] = REG::get_string(key, L"InitialSearchList");
+        if (m.snapshot_ours && !err && now == initiallist)
+        {
+            reset_search_domains(key);
+            REG::delete_value(key, owner_value);
+            log << "DNS search list: removed the domains of an ended UH VPN session (pid " << m.owner.pid
+                << ") and restored the list it had replaced\n";
+            return;
+        }
+        if (shortened)
+            REG::set_string(key, L"SearchList", *shortened);
+        if (m.snapshot_ours)
+        {
+            // our snapshot, but the list has changed since it was taken: it must not be
+            // restored later over that change (a next session's teardown would)
+            REG::delete_value(key, L"InitialSearchList");
+            REG::delete_value(key, L"OriginalSearchList");
+        }
+        REG::delete_value(key, owner_value);
+        log << "DNS search list: " << (shortened ? "removed the domains of" : "nothing left of")
+            << " an ended UH VPN session (pid " << m.owner.pid << "); other entries kept\n";
+    }
+
   public:
     OPENVPN_EXCEPTION(dns_error);
 
@@ -282,22 +357,69 @@ class Dns
      * @param  domains    a comma separated list of domain names
      *
      */
-    static void set_search_domains(const std::string &itf_name, const std::string &domains)
+    static void set_search_domains(const std::string &itf_name, const std::string &domains, std::ostream *log = nullptr)
     {
         if (domains.empty())
         {
             return;
         }
+        std::ostringstream discard;
+        std::ostream &out = log ? *log : discard;
 
         auto [list_key, list_exists] = open_searchlist_key();
+
+        // An owner value already there: one of an ended UH VPN session is undone first, so its
+        // domains do not stay; one of a running process (or one we cannot read) is not ours to
+        // replace, so this session's domains go unrecorded (one UH VPN tunnel at a time is the
+        // supported case; this is the fallback if two run).
+        bool record = true;
+        {
+            auto [value, error] = REG::get_string(list_key, owner_value);
+            if (!error)
+            {
+                const auto mark = OwnerMark::parse_search_list_mark(value);
+                switch (Win::judge_owner(mark ? std::optional<OwnerMark::Owner>(mark->owner) : std::nullopt))
+                {
+                case OwnerMark::Verdict::Gone:
+                    remove_owned_domains(list_key, *mark, out);
+                    list_exists = !REG::get_string(list_key, L"SearchList").first.empty();
+                    break;
+                case OwnerMark::Verdict::Live:
+                    out << "DNS search list: owner value of running process " << mark->owner.pid
+                        << " kept; this session's domains are not recorded\n";
+                    record = false;
+                    break;
+                case OwnerMark::Verdict::Unreadable:
+                    out << "DNS search list: owner value not readable, kept; this session's domains are not recorded\n";
+                    record = false;
+                    break;
+                case OwnerMark::Verdict::Own:
+                    break;
+                }
+            }
+        }
+
         bool initial_list_exists = initial_searchlist_exists(list_key);
         bool single_domain = domains.find(',') == domains.npos;
+        // our session takes the snapshot (InitialSearchList, OriginalSearchList) only if none
+        // exists: one that exists belongs to another client's session or a stale one
+        const bool snapshot_ours = !initial_list_exists && (list_exists || !single_domain);
+        std::wstring wide_domains = wstring::from_utf8(domains);
+        const bool use_itf_suffix = single_domain && !list_exists;
+
+        // The owner value is written before anything it describes, so that a crash at any later
+        // point leaves a mark that crash cleanup can act on (domains or snapshot not there yet
+        // are simply not found).
+        if (record && !use_itf_suffix)
+            set_owner(list_key, wide_domains, snapshot_ours);
+
         if (!initial_list_exists)
         {
             if (list_exists)
             {
                 if (!set_initial_searchlist_from_existing(list_key))
                 {
+                    clear_owner_if_ours(list_key);
                     return;
                 }
             }
@@ -305,19 +427,62 @@ class Dns
             {
                 if (!set_initial_searchlist_from_domains(list_key))
                 {
+                    clear_owner_if_ours(list_key);
                     return;
                 }
             }
         }
 
-        std::wstring wide_domains = wstring::from_utf8(domains);
-        bool success_adding = single_domain && !list_exists
+        bool success_adding = use_itf_suffix
                                   ? set_itf_domain_suffix(itf_name, wide_domains)
                                   : add_to_searchlist(list_key, wide_domains);
         if (!success_adding)
         {
             remove_search_domains(itf_name, domains);
         }
+    }
+
+    /**
+     * @brief Remove the search domains a UH VPN session added and never removed (crash cleanup)
+     *
+     * The DNS search list is system-wide, and stock openvpn3 clients use the same registry
+     * values (SearchList, InitialSearchList, OriginalSearchList). So only domains recorded by
+     * our owner value are removed, and only if its owner has ended (OwnerMark::judge: not
+     * running, or its process id now belongs to a process that started later). A list without
+     * our value, a value we cannot read, and the domains of a running owner are left alone.
+     *
+     * @param log   what was found and done
+     * @return bool true if domains were removed
+     */
+    static bool remove_stale_search_domains(std::ostream &log)
+    {
+        bool removed = false;
+        for (const auto subkey : owner_value_subkeys)
+        {
+            typename REG::Key key(subkey);
+            if (!key.defined())
+                continue;
+            auto [value, error] = REG::get_string(key, owner_value);
+            if (error)
+                continue;
+            const auto mark = OwnerMark::parse_search_list_mark(value);
+            const auto verdict = Win::judge_owner(mark ? std::optional<OwnerMark::Owner>(mark->owner) : std::nullopt);
+            switch (verdict)
+            {
+            case OwnerMark::Verdict::Unreadable:
+                log << "DNS search list: owner value not readable, left alone\n";
+                break;
+            case OwnerMark::Verdict::Own:
+            case OwnerMark::Verdict::Live:
+                log << "DNS search list: domains of running process " << mark->owner.pid << ", left alone\n";
+                break;
+            case OwnerMark::Verdict::Gone:
+                remove_owned_domains(key, *mark, log);
+                removed = true;
+                break;
+            }
+        }
+        return removed;
     }
 
     /**
@@ -409,6 +574,7 @@ class Dns
                 // Store the shortened search list
                 REG::set_string(list_key, L"SearchList", searchlist);
             }
+            clear_owner_if_ours(list_key);
         }
     }
 
@@ -429,7 +595,7 @@ class Dns
         void execute(std::ostream &log) override
         {
             log << to_string() << "\n";
-            set_search_domains(itf_name_, search_domains_);
+            set_search_domains(itf_name_, search_domains_, &log);
         }
 
         /**

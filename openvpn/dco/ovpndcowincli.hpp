@@ -501,7 +501,27 @@ class OvpnDcoWinClient : public Client,
             DWORD res = dco_ioctl_(OVPN_IOCTL_GET_STATS, 0, 0, &stats, sizeof(stats));
             if (res == ERROR_SUCCESS)
             {
-                last_stats = SessionStats::DCOTransportSource::Data(stats.TransportBytesReceived, stats.TransportBytesSent, stats.TunBytesReceived, stats.TunBytesSent);
+                // The driver counts packets only per channel: data packets (each one tunnel
+                // packet, keepalive pings included) and control packets. Transport packets are
+                // both. The counters are 32-bit and wrap: they are kept as 64-bit totals that
+                // never go backwards. A 64-bit byte counter going down means the driver zeroed
+                // its statistics (new peer).
+                const bool reset = stats.TransportBytesReceived < old_stats.transport_bytes_in
+                                   || stats.TransportBytesSent < old_stats.transport_bytes_out;
+                const auto u32 = [](LONG v)
+                { return static_cast<std::uint32_t>(static_cast<ULONG>(v)); };
+                const count_t data_in = static_cast<count_t>(pkts_data_in_.update(u32(stats.ReceivedDataPackets), reset));
+                const count_t data_out = static_cast<count_t>(pkts_data_out_.update(u32(stats.SentDataPackets), reset));
+                const count_t ctrl_in = static_cast<count_t>(pkts_ctrl_in_.update(u32(stats.ReceivedControlPackets), reset));
+                const count_t ctrl_out = static_cast<count_t>(pkts_ctrl_out_.update(u32(stats.SentControlPackets), reset));
+                last_stats = SessionStats::DCOTransportSource::Data(stats.TransportBytesReceived,
+                                                                    stats.TransportBytesSent,
+                                                                    stats.TunBytesReceived,
+                                                                    stats.TunBytesSent,
+                                                                    data_in + ctrl_in,
+                                                                    data_out + ctrl_out,
+                                                                    data_in,
+                                                                    data_out);
             }
         }
         catch (const ErrorCode &e)
@@ -536,11 +556,42 @@ class OvpnDcoWinClient : public Client,
             throw ErrorCode(Error::TUN_SETUP_FAILED, false, "no device handle");
 
         HANDLE th(handle->native_handle());
-        LPOVERLAPPED ov_ = (ov ? ov->get() : NULL);
+        if (!ov)
+        {
+            // A synchronous call on the device handle, which is opened overlapped (asio). Without
+            // an OVERLAPPED, DeviceIoControl waits on the file object, which any other I/O on the
+            // handle signals, so two such calls at once (GET_STATS from a stats poll on another
+            // thread, SET_PEER or NEW_KEY on the session thread) can return early or block for
+            // ever; and a NULL lpBytesReturned is not allowed without an OVERLAPPED. So: our own
+            // OVERLAPPED and event, the event's low bit set so that the completion is not queued
+            // to asio's completion port, and a wait for this operation only.
+            HANDLE ev = ::CreateEventW(NULL, TRUE, FALSE, NULL);
+            if (ev == NULL)
+                throw ErrorCode(Error::TUN_SETUP_FAILED, true, "DeviceIoControl: CreateEvent failed");
+            OVERLAPPED o{};
+            o.hEvent = reinterpret_cast<HANDLE>(reinterpret_cast<ULONG_PTR>(ev) | 1);
+            DWORD bytes = 0;
+            BOOL ok = DeviceIoControl(th, code, in_buf, in_buf_size, out_buf, out_buf_size, &bytes, &o);
+            DWORD error_code = ok ? ERROR_SUCCESS : GetLastError();
+            if (!ok && error_code == ERROR_IO_PENDING)
+            {
+                ok = GetOverlappedResult(th, &o, &bytes, TRUE);
+                error_code = ok ? ERROR_SUCCESS : GetLastError();
+            }
+            ::CloseHandle(ev);
+            if (!ok)
+            {
+                std::ostringstream os;
+                os << "DeviceIoControl(" << code_str.at(code) << ")"
+                   << " failed with code " << error_code;
+                throw ErrorCode(Error::TUN_SETUP_FAILED, true, os.str());
+            }
+            return ERROR_SUCCESS;
+        }
+        LPOVERLAPPED ov_ = ov->get();
         if (!DeviceIoControl(th, code, in_buf, in_buf_size, out_buf, out_buf_size, NULL, ov_))
         {
             const DWORD error_code = GetLastError();
-            if (ov)
             {
                 if (error_code == ERROR_IO_PENDING)
                 {
@@ -592,4 +643,5 @@ class OvpnDcoWinClient : public Client,
 
     SessionStats::DCOTransportSource::Data last_stats;
     SessionStats::DCOTransportSource::Data last_delta;
+    WrapCount32 pkts_data_in_, pkts_data_out_, pkts_ctrl_in_, pkts_ctrl_out_;
 };

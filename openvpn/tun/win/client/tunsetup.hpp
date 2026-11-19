@@ -33,6 +33,7 @@
 #include <openvpn/tun/proxy.hpp>
 #include <openvpn/tun/win/tunutil.hpp>
 #include <openvpn/tun/win/winproxy.hpp>
+#include <openvpn/tun/win/ipcfg.hpp>
 #include <openvpn/tun/win/tunutil.hpp>
 #include <openvpn/tun/win/client/setupbase.hpp>
 #include <openvpn/win/scoped_handle.hpp>
@@ -46,6 +47,10 @@
 
 #include <versionhelpers.h>
 
+#include <chrono>
+#include <deque>
+#include <mutex>
+
 // use IP Helper on Windows by default
 #ifdef OPENVPN_USE_NETSH
 #define TUNWINDOWS Util::TunNETSH
@@ -54,14 +59,307 @@
 #endif
 
 namespace openvpn::TunWin {
+
+#ifndef OPENVPN_USE_NETSH
+/**
+ * @brief Puts our block-ipv6 routes back when someone else removes them
+ *
+ * Stock openvpn3 clients add the same block-ipv6 routes (prefix, interface and next hop) and
+ * delete them when they disconnect, and a delete does not look at the metric. While a session
+ * of ours has block-ipv6 in force, this watches IPv6 route changes (NotifyRouteChange2) and,
+ * when one of the three block-ipv6 routes is deleted, adds ours again. Our own teardown stops
+ * the guard before it removes the routes. At most max_readds re-adds per window: a client that
+ * keeps deleting them gets the last word (and a log line) instead of a loop.
+ */
+class BlockIpv6Guard : public RC<thread_safe_refcount>
+{
+  public:
+    using Ptr = RCPtr<BlockIpv6Guard>;
+    static constexpr std::size_t max_readds = 10;
+    static constexpr std::chrono::seconds window{60};
+
+    void start(std::ostream &os)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (handle_)
+            return;
+        logwrap_ = Log::Context::Wrapper();
+        active_ = true;
+        const DWORD err = ::NotifyRouteChange2(AF_INET6, &BlockIpv6Guard::on_change, this, FALSE, &handle_);
+        if (err != NO_ERROR)
+        {
+            handle_ = nullptr;
+            active_ = false;
+            os << "block-ipv6 guard: NotifyRouteChange2 error " << err << ", routes not watched\n";
+            return;
+        }
+        os << "block-ipv6 guard: watching the block-ipv6 routes\n";
+    }
+
+    // Must not be called from the notification callback (CancelMibChangeNotify2 waits for it).
+    void stop(std::ostream &os)
+    {
+        HANDLE h = nullptr;
+        std::size_t readded = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            active_ = false;
+            h = handle_;
+            handle_ = nullptr;
+            readded = readded_total_;
+        }
+        if (h)
+        {
+            ::CancelMibChangeNotify2(h);
+            os << "block-ipv6 guard: stopped (" << readded << " route(s) put back)\n";
+        }
+    }
+
+    ~BlockIpv6Guard()
+    {
+        std::ostringstream os;
+        stop(os);
+    }
+
+  private:
+    static VOID WINAPI on_change(PVOID ctx, PMIB_IPFORWARD_ROW2 row, MIB_NOTIFICATION_TYPE type)
+    {
+        if (type == MibDeleteInstance && row)
+            static_cast<BlockIpv6Guard *>(ctx)->deleted(*row);
+    }
+
+    void deleted(const MIB_IPFORWARD_ROW2 &row)
+    {
+        const IpCfg::BlockIpv6Net *n = IpCfg::block_ipv6_net_of(row);
+        if (!n)
+            return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!active_)
+            return;
+        Log::Context logctx(logwrap_);
+        const auto now = std::chrono::steady_clock::now();
+        while (!readds_.empty() && now - readds_.front() > window)
+            readds_.pop_front();
+        if (readds_.size() >= max_readds)
+        {
+            active_ = false;
+            OPENVPN_LOG("block-ipv6 guard: routes removed " << max_readds << " times within " << window.count()
+                                                            << " s by another program; no longer putting them back");
+            return;
+        }
+        readds_.push_back(now);
+        MIB_IPFORWARD_ROW2 ours = IpCfg::block_ipv6_row(n->net, n->prefix_len);
+        const DWORD err = ::CreateIpForwardEntry2(&ours);
+        if (err == NO_ERROR)
+            ++readded_total_;
+        OPENVPN_LOG("block-ipv6 guard: route " << n->net << '/' << n->prefix_len << " was removed by another program; "
+                                               << (err == NO_ERROR || err == ERROR_OBJECT_ALREADY_EXISTS ? "put back" : "could not put it back, error " + std::to_string(err)));
+    }
+
+    std::mutex mutex_;
+    HANDLE handle_ = nullptr;
+    bool active_ = false;
+    std::deque<std::chrono::steady_clock::time_point> readds_;
+    std::size_t readded_total_ = 0;
+    Log::Context::Wrapper logwrap_;
+};
+
+class ActionBlockIpv6Guard : public Action
+{
+  public:
+    ActionBlockIpv6Guard(BlockIpv6Guard::Ptr guard, const bool start)
+        : guard_(std::move(guard)), start_(start)
+    {
+    }
+
+    void execute(std::ostream &os) override
+    {
+        if (start_)
+            guard_->start(os);
+        else
+            guard_->stop(os);
+    }
+
+    std::string to_string() const override
+    {
+        return start_ ? "block-ipv6 guard start" : "block-ipv6 guard stop";
+    }
+
+  private:
+    BlockIpv6Guard::Ptr guard_;
+    const bool start_;
+};
+#endif
+
+/**
+ * @brief UH VPN: a file listing the routes a session adds on a physical interface
+ *
+ * The bypass route to the server and pushed net_gateway routes go on the physical interface,
+ * where nothing marks them as a VPN's: a session that never reaches its teardown (crash,
+ * killed process) leaves them, and crash cleanup of the VPN adapter cannot find them. When the
+ * client names a file (ClientAPI::Config::windowsRouteRecordFile), the session writes these
+ * routes to it before adding them and deletes it after removing them, so the application can
+ * remove exactly those after a crash. A route that exists already when the record is written
+ * is another program's: it is left out (and logged).
+ *
+ * Format (UTF-8 text, written to a temporary file and moved over the old one):
+ *   uhvpn-route-record 1
+ *   boot <seconds since 1970 at which this boot started, from GetTickCount64>
+ *   pid <process id>
+ *   route <network>/<prefix length> <interface LUID> <next hop, or - for on-link> <metric>
+ */
+class RouteRecord : public RC<thread_unsafe_refcount>
+{
+  public:
+    using Ptr = RCPtr<RouteRecord>;
+
+    explicit RouteRecord(std::string path)
+        : path_(std::move(path))
+    {
+    }
+
+    // metric: exactly as the route is added (IpCfg::ActionRoute gives -1 as 256; the
+    // TUNWINDOWS::AddRoute4Cmd of exclude routes passes its value through)
+    void add(const std::string &dest, const unsigned int prefix_len, const DWORD if_index, const std::string &nexthop, const ULONG metric)
+    {
+        entries_.push_back({dest, prefix_len, if_index, nexthop, metric});
+    }
+
+    bool empty() const
+    {
+        return entries_.empty();
+    }
+
+    void write(std::ostream &os) const
+    {
+        std::ostringstream text;
+        text << "uhvpn-route-record 1\n";
+        text << "boot " << (static_cast<long long>(::time(nullptr)) - static_cast<long long>(::GetTickCount64() / 1000)) << "\n";
+        text << "pid " << ::GetCurrentProcessId() << "\n";
+        std::size_t n = 0;
+        for (const auto &e : entries_)
+        {
+            const IP::Addr net = IP::Addr::from_string(e.dest).network_addr(e.prefix_len);
+            const std::string desc = net.to_string() + '/' + std::to_string(e.prefix_len) + " if=" + std::to_string(e.if_index);
+            NET_LUID luid{};
+            if (::ConvertInterfaceIndexToLuid(e.if_index, &luid) != NO_ERROR)
+            {
+                os << "route record: no LUID for interface " << e.if_index << ", " << desc << " not recorded\n";
+                continue;
+            }
+            MIB_IPFORWARD_ROW2 row;
+            ::InitializeIpForwardEntry(&row);
+            row.InterfaceLuid = luid;
+            row.DestinationPrefix.Prefix = IpCfg::detail::sockaddr_inet(net);
+            row.DestinationPrefix.PrefixLength = static_cast<UINT8>(e.prefix_len);
+            row.NextHop = e.nexthop.empty() ? IpCfg::detail::unspecified(row.DestinationPrefix.Prefix.si_family)
+                                            : IpCfg::detail::sockaddr_inet(IP::Addr::from_string(e.nexthop));
+            if (::GetIpForwardEntry2(&row) == NO_ERROR)
+            {
+                os << "route record: " << desc << " exists already (another program's), not recorded\n";
+                continue;
+            }
+            text << "route " << net.to_string() << '/' << e.prefix_len << ' ' << luid.Value << ' '
+                 << (e.nexthop.empty() ? std::string("-") : IP::Addr::from_string(e.nexthop).to_string()) << ' '
+                 << e.metric << "\n";
+            ++n;
+        }
+        const DWORD err = write_file(text.str());
+        if (err == NO_ERROR)
+            os << "route record: " << n << " route(s) on the physical interface recorded for crash cleanup\n";
+        else
+            os << "route record: cannot write " << path_ << ", error " << err << "\n";
+    }
+
+    void remove(std::ostream &os) const
+    {
+        const std::wstring w = wstring::from_utf8(path_);
+        if (::DeleteFileW(w.c_str()))
+            os << "route record: removed\n";
+        else if (::GetLastError() != ERROR_FILE_NOT_FOUND)
+            os << "route record: cannot delete " << path_ << ", error " << ::GetLastError() << "\n";
+    }
+
+  private:
+    struct Entry
+    {
+        std::string dest;
+        unsigned int prefix_len;
+        DWORD if_index;
+        std::string nexthop;
+        ULONG metric;
+    };
+
+    DWORD write_file(const std::string &data) const
+    {
+        const std::wstring final_path = wstring::from_utf8(path_);
+        const std::wstring tmp = final_path + L".tmp";
+        HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+            return ::GetLastError();
+        DWORD written = 0;
+        const BOOL ok = ::WriteFile(h, data.data(), static_cast<DWORD>(data.size()), &written, nullptr)
+                        && written == data.size() && ::FlushFileBuffers(h);
+        const DWORD err = ok ? NO_ERROR : ::GetLastError();
+        ::CloseHandle(h);
+        if (!ok)
+        {
+            ::DeleteFileW(tmp.c_str());
+            return err ? err : ERROR_WRITE_FAULT;
+        }
+        if (!::MoveFileExW(tmp.c_str(), final_path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        {
+            const DWORD e = ::GetLastError();
+            ::DeleteFileW(tmp.c_str());
+            return e;
+        }
+        return NO_ERROR;
+    }
+
+    const std::string path_;
+    std::vector<Entry> entries_;
+};
+
+class ActionRouteRecord : public Action
+{
+  public:
+    ActionRouteRecord(RouteRecord::Ptr record, const bool write)
+        : record_(std::move(record)), write_(write)
+    {
+    }
+
+    void execute(std::ostream &os) override
+    {
+        if (write_)
+            record_->write(os);
+        else
+            record_->remove(os);
+    }
+
+    std::string to_string() const override
+    {
+        return write_ ? "route record write" : "route record remove";
+    }
+
+  private:
+    RouteRecord::Ptr record_;
+    const bool write_;
+};
+
 class Setup : public SetupBase
 {
   public:
     typedef RCPtr<Setup> Ptr;
 
-    Setup(openvpn_io::io_context &io_context_arg, const Type tun_type, bool allow_local_dns_resolvers_arg)
+    Setup(openvpn_io::io_context &io_context_arg,
+          const Type tun_type,
+          bool allow_local_dns_resolvers_arg,
+          const std::string &adapter_guid = "",
+          const std::string &route_record_file = "")
         : delete_route_timer(io_context_arg),
           tun_type_(tun_type),
+          adapter_guid_(adapter_guid),
+          route_record_file_(route_record_file),
           allow_local_dns_resolvers(allow_local_dns_resolvers_arg)
     {
     }
@@ -98,7 +396,9 @@ class Setup : public SetupBase
             return INVALID_HANDLE_VALUE;
 
         // enumerate available TAP adapters
-        Util::TapNameGuidPairList guids(tun_type_);
+        Util::TapNameGuidPairList guids(tun_type_, adapter_guid_);
+        if (!adapter_guid_.empty())
+            os << "Requested adapter: " << adapter_guid_ << "\n";
         os << "TAP ADAPTERS:\n"
            << guids.to_string() << "\n";
 
@@ -109,6 +409,11 @@ class Setup : public SetupBase
         if (!th.defined())
         {
             os << " FAILED\n";
+            if (!adapter_guid_.empty())
+                throw ErrorCode(Error::TUN_IFACE_CREATE,
+                                true,
+                                "cannot open the requested adapter " + adapter_guid_
+                                    + " (missing, not marked as a UH VPN adapter, or in use)");
             throw ErrorCode(Error::TUN_IFACE_CREATE, true, "cannot acquire TAP handle");
         }
 
@@ -261,18 +566,33 @@ class Setup : public SetupBase
                                  ActionList &add_cmds,
                                  ActionList &remove_cmds_bypass_gw)
     {
-        if (!ipv6)
+        // UH VPN: IPv6 too, as a /128 (upstream added IPv4 bypass routes only)
+        const unsigned int host = ipv6 ? 128 : 32;
+        if (!gw.local_route())
         {
-            if (!gw.local_route())
-            {
-                add_cmds.add(new WinCmd("netsh interface ip add route " + route + "/32 " + to_string(gw.interface_index()) + ' ' + gw.gateway_address() + " store=active"));
-                remove_cmds_bypass_gw.add(new WinCmd("netsh interface ip delete route " + route + "/32 " + to_string(gw.interface_index()) + ' ' + gw.gateway_address() + " store=active"));
-            }
-            else
-            {
-                OPENVPN_LOG("Skip bypass route to " << route << ", route is local");
-            }
+            const std::string gw_index = to_string(gw.interface_index());
+            add_cmds.add(IpCfg::route(route, host, gw.interface_index(), gw_index, gw.gateway_address(), -1, true));
+            remove_cmds_bypass_gw.add(IpCfg::route(route, host, gw.interface_index(), gw_index, gw.gateway_address(), -1, false));
         }
+        else
+        {
+            OPENVPN_LOG("Skip bypass route to " << route << ", route is local");
+        }
+    }
+
+    // UH VPN: whether a pushed include route would take the server's own address: one of the
+    // same family that contains it and, when a host bypass route to it is in place, is a host
+    // route too (anything shorter loses to the bypass route by prefix length; a host route
+    // competes by metric, and a pushed one can be lower).
+    static bool captures_server(const TunBuilderCapture::Route &route, const IP::Addr &server, const bool bypassed)
+    {
+        if (!server.defined() || route.ipv6 != server.is_ipv6())
+            return false;
+        const unsigned int host = server.is_ipv6() ? 128 : 32;
+        if (bypassed && route.prefix_length < host)
+            return false;
+        return IP::Addr::from_string(route.address).network_addr(route.prefix_length)
+               == server.network_addr(route.prefix_length);
     }
 
   private:
@@ -295,24 +615,25 @@ class Setup : public SetupBase
       public:
         UseDNS() = default;
 
-        UseDNS(const TunBuilderCapture &pull)
+        // block_ipv6: IPv6 blocked for this session (pushed, or see Setup::block_ipv6_)
+        UseDNS(const TunBuilderCapture &pull, const bool block_ipv6)
         {
             if (pull.dns_options.servers.empty())
                 return;
             for (const auto &ip : pull.dns_options.servers.begin()->second.addresses)
-                add(ip.address, pull);
+                add(ip.address, block_ipv6);
         }
 
         static bool enabled(const std::string &address,
-                            const TunBuilderCapture &pull)
+                            const bool block_ipv6)
         {
-            return IP::Addr(address).is_ipv6() && pull.block_ipv6 ? false : true;
+            return IP::Addr(address).is_ipv6() && block_ipv6 ? false : true;
         }
 
         int add(const std::string &address,
-                const TunBuilderCapture &pull)
+                const bool block_ipv6)
         {
-            if (enabled(address, pull))
+            if (enabled(address, block_ipv6))
                 return indices[IP::Addr(address).is_ipv6() ? 1 : 0]++;
             else
                 return -1;
@@ -342,6 +663,7 @@ class Setup : public SetupBase
      */
     void set_adapter_dns(ActionList &create,
                          ActionList &destroy,
+                         const Util::TapNameGuidPair &tap,
                          const std::string &itf_index_name,
                          const std::vector<std::string> &addresses,
                          const TunBuilderCapture &pull)
@@ -362,6 +684,29 @@ class Setup : public SetupBase
         //  [[index=]<integer>] [[validate=]yes|no]
         // Usage: delete dnsservers [name=]<string> [[address=]<IPv6 address>|all] [[validate=]yes|no]
 
+#ifndef OPENVPN_USE_NETSH
+        // one SetInterfaceDnsSettings call per address family
+        GUID guid;
+        // Fatal, not a fallback: without it the pushed DNS servers cannot be set (DNS would
+        // leak), and an ErrorCode so that ovpn-dco reports it like wintun does instead of
+        // reconnecting for ever.
+        if (tap.guid.empty() || ::IIDFromString(wstring::from_utf8(tap.guid).c_str(), &guid) != S_OK)
+            throw ErrorCode(Error::TUN_SETUP_FAILED,
+                            true,
+                            "adapter \"" + tap.name + "\" has no usable interface GUID ('" + tap.guid
+                                + "'): cannot set its DNS servers");
+        for (const bool ipv6 : {false, true})
+        {
+            std::vector<std::string> family;
+            for (const auto &address : addresses)
+                if (UseDNS::enabled(address, block_ipv6_) && IP::Addr(address).is_ipv6() == ipv6)
+                    family.push_back(address);
+            if (family.empty())
+                continue;
+            create.add(new IpCfg::ActionDnsServers(guid, itf_index_name, ipv6, family));
+            destroy.add(new IpCfg::ActionDnsServers(guid, itf_index_name, ipv6, {}));
+        }
+#else
         // fix for vista and dnsserver vs win7+ dnsservers
         std::string dns_servers_cmd = "dnsservers";
         std::string validate_cmd = " validate=no";
@@ -375,7 +720,7 @@ class Setup : public SetupBase
         for (const auto &address : addresses)
         {
             // 0-based index for specific IPv4/IPv6 protocol, or -1 if disabled
-            const int count = dc.add(address, pull);
+            const int count = dc.add(address, block_ipv6_);
             if (count >= 0)
             {
                 const std::string proto = IP::Addr(address).is_ipv6() ? "ipv6" : "ip";
@@ -388,6 +733,7 @@ class Setup : public SetupBase
                 }
             }
         }
+#endif
     }
 
     void register_rings(HANDLE handle, RingBuffer::Ptr ring_buffer)
@@ -436,12 +782,32 @@ class Setup : public SetupBase
         const TunBuilderCapture::RouteAddress *local4 = pull.vpn_ipv4();
         const TunBuilderCapture::RouteAddress *local6 = pull.vpn_ipv6();
 
+        // UH VPN: a tunnel that takes the IPv4 default route but gives no IPv6 address would
+        // leave the native IPv6 default route in place, so dual-stack sites would be reached
+        // from the user's real address. IPv6 is then blocked for the session as if the server
+        // had pushed block-ipv6 (same routes, metric and guard). A server that gives IPv6
+        // (ifconfig-ipv6) is not affected.
+        block_ipv6_ = pull.block_ipv6 || (pull.reroute_gw.ipv4 && !local6);
+
+        // UH VPN: routes this session puts on a physical interface, for crash cleanup
+        RouteRecord::Ptr record;
+        if (!route_record_file_.empty() && !l2_post)
+            record.reset(new RouteRecord(route_record_file_));
+        if (block_ipv6_ && !pull.block_ipv6)
+            os << "IPv4 default route through the tunnel and no IPv6 address in it: blocking IPv6 for this session\n";
+
         if (!l2_post)
         {
             // set TAP media status to CONNECTED
             if (tun_type_ == TapWindows6)
                 Util::tap_set_media_status(th, true);
 
+#ifndef OPENVPN_USE_NETSH
+            // undo what a session that never reached its teardown left on this adapter (DNS
+            // servers of both families, addresses, DNS suffix), and its NRPT rules
+            create.add(new IpCfg::ActionResetInterface(tap.index, tap.guid));
+            create.add(new NRPT::ActionDeleteStale(process_id_ ? process_id_ : ::GetCurrentProcessId()));
+#endif
             // try to delete any stale routes on interface left over from previous session
             create.add(new Util::ActionDeleteAllRoutesOnInterface(tap.index));
         }
@@ -465,10 +831,9 @@ class Setup : public SetupBase
             {
                 // set high metric on interface so that rogue route which Windows creates (0.0.0.0/0)
                 // won't affect anything
-                create.add(new WinCmd("netsh interface ip set interface " + tap_index_name + " metric=9000"));
+                create.add(IpCfg::interface_metric4(tap.index, tap_index_name, 9000));
 
-                const std::string metric = route_metric_opt(pull, *local4, MT_IFACE);
-                const std::string netmask = IPv4::Addr::netmask_from_prefix_len(local4->prefix_length).to_string();
+                const int gwmetric = route_metric(pull, *local4);
                 const IP::Addr localaddr = IP::Addr::from_string(local4->address);
                 const IP::Addr remoteaddr = IP::Addr::from_string(local4->gateway);
                 if (tun_type_ == TapWindows6)
@@ -478,16 +843,16 @@ class Setup : public SetupBase
                     else
                         Util::tap_configure_topology_subnet(th, localaddr, local4->prefix_length);
                 }
-                create.add(new WinCmd("netsh interface ip set address " + tap_index_name + " static " + local4->address + ' ' + netmask + " gateway=" + local4->gateway + metric + " store=active"));
-                destroy.add(new WinCmd("netsh interface ip delete address " + tap_index_name + ' ' + local4->address + " gateway=all store=active"));
+                IpCfg::set_address4(create, tap.index, tap_index_name, local4->address, local4->prefix_length, local4->gateway, gwmetric);
+                IpCfg::delete_address4(destroy, tap.index, tap_index_name, local4->address, local4->prefix_length, local4->gateway);
 
                 // specifying 'gateway' when setting ip address makes Windows add unnecessary route 0.0.0.0/0,
                 // which might cause routing conflicts, so we have to delete it after a small delay.
                 // If route is deleted before profile is created, then profile won't be created at all (OVPN-135)
-                WinCmd::Ptr cmd_delroute = new WinCmd("netsh interface ip delete route 0.0.0.0/0 " + tap_index_name + ' ' + local4->gateway + " store=active");
+                Action::Ptr cmd_delroute = IpCfg::route("0.0.0.0", 0, tap.index, tap_index_name, local4->gateway, -1, false);
 
                 // set lowest interface metric to make Windows use pushed DNS search domain
-                WinCmd::Ptr cmd_setmetric = new WinCmd("netsh interface ip set interface " + tap_index_name + " metric=1");
+                Action::Ptr cmd_setmetric = IpCfg::interface_metric4(tap.index, tap_index_name, 1);
 
                 delete_route_timer.expires_after(Time::Duration::seconds(5));
                 delete_route_timer.async_wait([self = Ptr(this),
@@ -504,18 +869,21 @@ class Setup : public SetupBase
         }
 
         // Should we block IPv6?
-        if (pull.block_ipv6)
+        if (block_ipv6_)
         {
-            static const char *const block_ipv6_net[] = {
-                "2000::/4",
-                "3000::/4",
-                "fc00::/7",
-            };
-            for (size_t i = 0; i < array_size(block_ipv6_net); ++i)
+#ifndef OPENVPN_USE_NETSH
+            // the guard stops first in teardown, so that it never fights our own deletes
+            BlockIpv6Guard::Ptr guard(new BlockIpv6Guard());
+            destroy.add(new ActionBlockIpv6Guard(guard, false));
+#endif
+            for (const auto &n : IpCfg::block_ipv6_nets)
             {
-                create.add(new WinCmd("netsh interface ipv6 add route " + std::string(block_ipv6_net[i]) + " interface=1 store=active"));
-                destroy.add(new WinCmd("netsh interface ipv6 delete route " + std::string(block_ipv6_net[i]) + " interface=1 store=active"));
+                create.add(IpCfg::block_ipv6_route(n, true));
+                destroy.add(IpCfg::block_ipv6_route(n, false));
             }
+#ifndef OPENVPN_USE_NETSH
+            create.add(new ActionBlockIpv6Guard(guard, true));
+#endif
         }
 
         // Set IPv6 Interface
@@ -527,13 +895,14 @@ class Setup : public SetupBase
         //  [[store=]active|persistent]
         // Usage: delete address [interface=]<string> [address=]<IPv6 address>
         //  [[store=]active|persistent]
-        if (local6 && !pull.block_ipv6 && !l2_post)
+        if (local6 && !block_ipv6_ && !l2_post)
         {
-            create.add(new WinCmd("netsh interface ipv6 set address " + tap_index_name + ' ' + local6->address + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete address " + tap_index_name + ' ' + local6->address + " store=active"));
+            // netsh gives an address without a prefix length a /64, whatever the pushed prefix
+            create.add(IpCfg::address6(tap.index, tap_index_name, local6->address, 64, true));
+            destroy.add(IpCfg::address6(tap.index, tap_index_name, local6->address, 64, false));
 
-            create.add(new WinCmd("netsh interface ipv6 add route " + local6->gateway + '/' + to_string(local6->prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete route " + local6->gateway + '/' + to_string(local6->prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
+            create.add(IpCfg::route(local6->gateway, local6->prefix_length, tap.index, tap_index_name, ipv6_next_hop, -1, true));
+            destroy.add(IpCfg::route(local6->gateway, local6->prefix_length, tap.index, tap_index_name, ipv6_next_hop, -1, false));
         }
 
         // Process Routes
@@ -559,6 +928,9 @@ class Setup : public SetupBase
         //  [[store=]active|persistent]
 
         // Add Bypass Route
+        // UH VPN: for an IPv6 server too (a /128), so that neither redirect-gateway ipv6 nor
+        // block-ipv6 takes the session's own packets into the tunnel or the blackhole.
+        bool bypassed = false; // a host route to the server via the physical gateway is in place
         {
             // get default gateway
             ADDRESS_FAMILY af = pull.remote_address.ipv6 ? AF_INET6 : AF_INET;
@@ -569,8 +941,13 @@ class Setup : public SetupBase
                 // add server bypass route
                 if (gw.defined())
                 {
-                    if (!pull.remote_address.ipv6 && !(pull.reroute_gw.flags & RedirectGatewayFlags::RG_LOCAL))
-                        add_bypass_route(gw, pull.remote_address.address, false, create, destroy);
+                    if (!(pull.reroute_gw.flags & RedirectGatewayFlags::RG_LOCAL))
+                    {
+                        add_bypass_route(gw, pull.remote_address.address, pull.remote_address.ipv6, create, destroy);
+                        if (record)
+                            record->add(pull.remote_address.address, pull.remote_address.ipv6 ? 128 : 32, gw.interface_index(), gw.gateway_address(), 256);
+                        bypassed = true;
+                    }
                 }
                 else
                     throw tun_win_setup("redirect-gateway error: cannot find gateway for bypass route");
@@ -579,15 +956,26 @@ class Setup : public SetupBase
 
         // Process include routes
         {
+            const IP::Addr server = IP::Addr::from_string(pull.remote_address.address);
             for (auto &route : pull.add_routes)
             {
+                // UH VPN: a pushed route that would win over the way to the server (a host route
+                // to it, which can carry a lower metric than our bypass route, or with no bypass
+                // route any route containing it) would send the session's own packets into the
+                // tunnel: a loop. Dropped.
+                if (captures_server(route, server, bypassed))
+                {
+                    os << "NOTE: pushed route " << route.to_string()
+                       << " would take the VPN server's own address into the tunnel; ignored\n";
+                    continue;
+                }
                 if (route.ipv6)
                 {
-                    if (!pull.block_ipv6)
+                    if (!block_ipv6_)
                     {
-                        const std::string metric = route_metric_opt(pull, route, MT_NETSH);
-                        create.add(new WinCmd("netsh interface ipv6 add route " + route.address + '/' + to_string(route.prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + metric + " store=active"));
-                        destroy.add(new WinCmd("netsh interface ipv6 delete route " + route.address + '/' + to_string(route.prefix_length) + ' ' + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
+                        const int metric = route_metric(pull, route);
+                        create.add(IpCfg::route(route.address, route.prefix_length, tap.index, tap_index_name, ipv6_next_hop, metric, true));
+                        destroy.add(IpCfg::route(route.address, route.prefix_length, tap.index, tap_index_name, ipv6_next_hop, -1, false));
                     }
                 }
                 else
@@ -627,6 +1015,8 @@ class Setup : public SetupBase
                     {
                         create.add(new TUNWINDOWS::AddRoute4Cmd(route.address, route.prefix_length, gw.interface_index(), "", gw.gateway_address(), metric, true));
                         destroy.add(new TUNWINDOWS::AddRoute4Cmd(route.address, route.prefix_length, gw.interface_index(), "", gw.gateway_address(), metric, false));
+                        if (record)
+                            record->add(route.address, route.prefix_length, gw.interface_index(), gw.gateway_address(), static_cast<ULONG>(metric));
                     }
                 }
                 if (ipv6_error)
@@ -639,19 +1029,19 @@ class Setup : public SetupBase
         // Process IPv4 redirect-gateway
         if (pull.reroute_gw.ipv4)
         {
-            create.add(new WinCmd("netsh interface ip add route 0.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
-            create.add(new WinCmd("netsh interface ip add route 128.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
-            destroy.add(new WinCmd("netsh interface ip delete route 0.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
-            destroy.add(new WinCmd("netsh interface ip delete route 128.0.0.0/1 " + tap_index_name + ' ' + local4->gateway + " store=active"));
+            create.add(IpCfg::route("0.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, true));
+            create.add(IpCfg::route("128.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, true));
+            destroy.add(IpCfg::route("0.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, false));
+            destroy.add(IpCfg::route("128.0.0.0", 1, tap.index, tap_index_name, local4->gateway, -1, false));
         }
 
         // Process IPv6 redirect-gateway
-        if (pull.reroute_gw.ipv6 && !pull.block_ipv6)
+        if (pull.reroute_gw.ipv6 && !block_ipv6_)
         {
-            create.add(new WinCmd("netsh interface ipv6 add route 0::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            create.add(new WinCmd("netsh interface ipv6 add route 8000::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete route 0::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
-            destroy.add(new WinCmd("netsh interface ipv6 delete route 8000::/1 " + tap_index_name + ' ' + ipv6_next_hop + " store=active"));
+            create.add(IpCfg::route("0::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, true));
+            create.add(IpCfg::route("8000::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, true));
+            destroy.add(IpCfg::route("0::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, false));
+            destroy.add(IpCfg::route("8000::", 1, tap.index, tap_index_name, ipv6_next_hop, -1, false));
         }
 
         // Process redirect-gateway "block-local" flag:
@@ -732,7 +1122,7 @@ class Setup : public SetupBase
                 {
                     // Set pushed DNS servers with the adapter. In case the local resolver
                     // doesn't work the VPN DNS resolvers will serve as a fallback
-                    set_adapter_dns(create, destroy, tap_index_name, addresses, pull);
+                    set_adapter_dns(create, destroy, tap, tap_index_name, addresses, pull);
                 }
 
                 create.add(new DNS::ActionCreate(tap.name, search_domains));
@@ -743,8 +1133,8 @@ class Setup : public SetupBase
                 destroy.add(new DNS::ActionApply());
 
                 // flush DNS cache
-                create.add(new WinCmd("ipconfig /flushdns"));
-                destroy.add(new WinCmd("ipconfig /flushdns"));
+                create.add(IpCfg::flush_dns());
+                destroy.add(IpCfg::flush_dns());
 
                 // Use WFP for DNS leak protection unless local traffic is blocked already.
                 // Block DNS on all interfaces except the TAP adapter.
@@ -761,7 +1151,7 @@ class Setup : public SetupBase
                 const bool use_nrpt = IsWindows8OrGreater();
 
                 // count IPv4/IPv6 DNS servers
-                const UseDNS dns(pull);
+                const UseDNS dns(pull, block_ipv6_);
                 const DnsServer &server = pull.dns_options.servers.begin()->second;
 
                 // will DNS requests be split between VPN DNS server and local?
@@ -775,7 +1165,7 @@ class Setup : public SetupBase
                     std::vector<std::string> addresses;
                     std::for_each(server.addresses.begin(), server.addresses.end(), [&addresses](const DnsAddress &ip)
                                   { addresses.push_back(ip.address); });
-                    set_adapter_dns(create, destroy, tap_index_name, addresses, pull);
+                    set_adapter_dns(create, destroy, tap, tap_index_name, addresses, pull);
                 }
 
                 // If NRPT enabled and at least one IPv4 or IPv6 DNS
@@ -850,8 +1240,8 @@ class Setup : public SetupBase
                 }
 
                 // flush DNS cache
-                create.add(new WinCmd("ipconfig /flushdns"));
-                destroy.add(new WinCmd("ipconfig /flushdns"));
+                create.add(IpCfg::flush_dns());
+                destroy.add(IpCfg::flush_dns());
             }
         }
 
@@ -875,9 +1265,20 @@ class Setup : public SetupBase
             }
         }
 
-        OPENVPN_LOG("proxy_auto_config_url " << pull.proxy_auto_config_url.url);
+        // UH VPN: a proxy the server pushes (dhcp-option PROXY_AUTO_CONFIG_URL) is never
+        // applied. openvpn3 writes it into the Internet settings of whoever holds the console
+        // (Win::Impersonate), where it outlives a crash, and over Remote Desktop or after a user
+        // switch it lands in another user's profile. UH servers push none.
         if (pull.proxy_auto_config_url.defined())
-            ProxySettings::add_actions<WinProxySettings>(pull, create, destroy);
+            os << "NOTE: the server pushed a proxy auto-config URL; ignored (UH VPN applies no pushed proxy)\n";
+
+        // UH VPN: the record is written before anything else is changed, and removed after
+        // everything else is undone
+        if (record && !record->empty())
+        {
+            create.insert(create.begin(), Action::Ptr(new ActionRouteRecord(record, true)));
+            destroy.add(new ActionRouteRecord(record, false));
+        }
     }
 
     void adapter_config_l2(HANDLE th,
@@ -934,6 +1335,12 @@ class Setup : public SetupBase
         MT_IFACE,
     };
 
+    // the route's metric, else route-metric, else -1 (none)
+    static int route_metric(const TunBuilderCapture &pull, const TunBuilderCapture::RouteBase &route)
+    {
+        return route.metric >= 0 ? route.metric : pull.route_metric_default;
+    }
+
     static std::string route_metric_opt(const TunBuilderCapture &pull,
                                         const TunBuilderCapture::RouteBase &route,
                                         const MetricType mt)
@@ -969,8 +1376,13 @@ class Setup : public SetupBase
     AsioTimer delete_route_timer;
 
     const Type tun_type_;
+    const std::string adapter_guid_;
+    const std::string route_record_file_; // empty: no route record (see RouteRecord)
     Util::TapNameGuidPair tap_;
     bool allow_local_dns_resolvers = false;
     DWORD process_id_ = 0;
+    // IPv6 blocked for the current session: pushed block-ipv6, or IPv4 redirected with no
+    // IPv6 address in the tunnel (set by adapter_config)
+    bool block_ipv6_ = false;
 };
 } // namespace openvpn::TunWin

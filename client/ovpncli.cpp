@@ -16,6 +16,8 @@
 #include <memory>
 #include <utility>
 #include <atomic>
+#include <chrono>
+#include <future>
 
 #include <openvpn/io/io.hpp>
 
@@ -545,6 +547,37 @@ class ClientState
         async_stop_local_.stop();
     }
 
+    // DCO counters: SessionStats::dco_update() reads them through the DCO transport, which the
+    // session thread closes on stop and replaces on every reconnect, without a lock. So the
+    // update runs on the session thread; a caller on another thread waits for it a short time
+    // and otherwise gets the values of the last update. Never more than one update queued.
+    void dco_update()
+    {
+        MySessionStats::Ptr s(stats);
+        if (!s)
+            return;
+        if (io_context_->get_executor().running_in_this_thread())
+        {
+            s->dco_update();
+            return;
+        }
+        if (dco_update_queued.exchange(true, std::memory_order_acq_rel))
+            return;
+        auto done = std::make_shared<std::promise<void>>();
+        std::future<void> f = done->get_future();
+        openvpn_io::post(*io_context_, [this, s, done]()
+                         {
+            dco_update_queued.store(false, std::memory_order_release);
+            try {
+              s->dco_update();
+            }
+            catch (...)
+              {
+              }
+            done->set_value(); });
+        f.wait_for(std::chrono::milliseconds(250));
+    }
+
     // disconnect
     void on_disconnect()
     {
@@ -581,6 +614,7 @@ class ClientState
     bool io_context_owned = false;
 
     std::atomic<bool> foreign_thread_ready{false};
+    std::atomic<bool> dco_update_queued{false};
 };
 }; // namespace Private
 
@@ -1165,7 +1199,7 @@ OPENVPN_CLIENT_EXPORT long long OpenVPNClient::stats_value(int index) const
         if (stats)
         {
             if (index == SessionStats::BYTES_IN || index == SessionStats::BYTES_OUT)
-                stats->dco_update();
+                state->dco_update();
             return stats->combined_value(index);
         }
     }
@@ -1181,7 +1215,7 @@ OPENVPN_CLIENT_EXPORT std::vector<long long> OpenVPNClient::stats_bundle() const
     {
         MySessionStats *stats = state->stats.get();
         if (stats)
-            stats->dco_update();
+            state->dco_update();
         for (size_t i = 0; i < n; ++i)
             sv.push_back(stats ? stats->combined_value(i) : 0);
     }
@@ -1206,7 +1240,7 @@ OPENVPN_CLIENT_EXPORT InterfaceStats OpenVPNClient::tun_stats() const
         // data.  Vice versa for TUN_*_IN.
         if (stats)
         {
-            stats->dco_update();
+            state->dco_update();
             ret.bytesOut = stats->stat_count(SessionStats::TUN_BYTES_IN);
             ret.bytesIn = stats->stat_count(SessionStats::TUN_BYTES_OUT);
             ret.packetsOut = stats->stat_count(SessionStats::TUN_PACKETS_IN);
@@ -1236,7 +1270,7 @@ OPENVPN_CLIENT_EXPORT TransportStats OpenVPNClient::transport_stats() const
         MySessionStats *stats = state->stats.get();
         if (stats)
         {
-            stats->dco_update();
+            state->dco_update();
             ret.bytesOut = stats->stat_count(SessionStats::BYTES_OUT);
             ret.bytesIn = stats->stat_count(SessionStats::BYTES_IN);
             ret.packetsOut = stats->stat_count(SessionStats::PACKETS_OUT);
